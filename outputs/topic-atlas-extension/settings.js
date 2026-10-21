@@ -2,19 +2,25 @@
 const $=id=>document.getElementById(id), escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const send=async m=>{const r=await chrome.runtime.sendMessage(m);if(r?.error)throw new Error(r.error);return r;};
 function report(id,text,error=false){$(id).textContent=text;$(id).classList.toggle('error',error);}
-const labels={queued:'排队中',running:'整理中',done:'已完成',interrupted:'已中断',error:'失败，等待续做',cancelled:'已取消'};
+const labels={queued:'排队中',running:'整理中',done:'已完成',interrupted:'已中断',error:'失败，已暂停',cancelled:'已取消'};
 function historyDetails(h){
   if(!h)return '';
   return `<details class="history-review"><summary>历史读取：目录 ${Number(h.coveredPages)||0}/${Number(h.pageTotal)||0} 页 · ${Number(h.catalogTotal)||0} 个主题 · 补查 ${Number(h.supplements)||0}/2 次</summary><p>已选主题：${escapeHTML((h.topicIds||[]).join('、')||'无')}<br>原文轮次：${escapeHTML((h.roundIds||[]).join('、')||'未请求')}<br>选择请求：${Number(h.requests)||0} 次</p>${(h.reads||[]).map(r=>`<p>${escapeHTML(r.stage)}${r.page?' · 第 '+Number(r.page)+' 页':''} · ${escapeHTML(r.reason||'')}<br>查看目录：${escapeHTML((r.catalogIds||[]).join('、')||'—')}<br>读取主题：${escapeHTML((r.topicIds||[]).join('、')||'无')} · 读取轮次：${escapeHTML((r.roundIds||[]).join('、')||'无')}</p>`).join('')}</details>`;
 }
 function directoryDetails(d){return d?`<p>旧主题介绍补齐：${Number(d.completed)||0}/${Number(d.total)||0} · ${Number(d.requests)||0} 次请求（依据已保存摘要生成）</p>`:'';}
+function diagnosticDetails(d){
+  if(!d)return '';
+  const ends={stop:'正常结束',length:'输出达到上限',content_filter:'内容过滤',tool_calls:'工具调用',function_call:'函数调用',missing:'未提供',other:'未识别'};
+  const fields=[['失败阶段',d.stage],['错误编号',d.code],['具体原因',d.reason],['处理环节',d.phase],['主题序号',d.topicNumber],['关系序号',d.relationNumber],['所在轮次',d.roundLabel],['字段',d.field],['应当返回',d.expected],['实际情况',d.actual],['建议操作',d.nextStep],['结束原因',d.finishReason?ends[d.finishReason]||'未识别':undefined],['本次输出上限',d.outputLimit],['估算输入',d.estimatedInput],['任务输入预算',d.inputBudget],['输入用量',d.prompt_tokens],['输出用量',d.completion_tokens],['总用量',d.total_tokens],['收到正文字符数',d.bodyCharacters],['是否检测到推理字段',typeof d.reasoningPresent==='boolean'?(d.reasoningPresent?'是':'否'):undefined],['收到流结束标记',d.stream?(d.streamDone?'是':'否'):undefined]];
+  return `<details class="history-review"><summary>错误诊断</summary><p>${fields.filter(([,v])=>v!==undefined).map(([k,v])=>escapeHTML(k)+'：'+escapeHTML(v)).join('<br>')}</p><p>用量仅在接口提供时显示；不保存回复正文、推理内容或 API Key。</p></details>`;
+}
 let busy=false;
 async function refresh(initial=false){
   const s=await send({type:'queue-list'}), l=s.library;
   report('folderState',l.connected?`已连接：${l.name} · ${l.granted?'已授权':'需要重新授权'}${l.lastSavedAt?' · 最近保存 '+new Date(l.lastSavedAt).toLocaleString('zh-CN'):''}${l.error?'\n'+l.error:''}`:'尚未选择文件夹；当前记录暂存于浏览器。',Boolean(l.error||l.connected&&!l.granted));
   report('queueNotice',s.notice||'',Boolean(s.notice));
   if(initial){$('pathLabel').value=l.pathLabel||l.suggestedPath;$('organizeMode').value=s.settings.mode;$('idleDelay').value=s.settings.delay;}
-  $('tasks').innerHTML=s.tasks.length?s.tasks.map(t=>`<div class="task-row"><b>${escapeHTML(t.title)} · ${labels[t.state]||escapeHTML(t.state)}</b><p>${escapeHTML(t.branchId)} · 已完成 ${t.processed} / ${t.total} 轮 · 剩余 ${Math.max(0,t.total-t.processed)} 轮</p><p>${new Date(t.createdAt).toLocaleString('zh-CN')}</p>${t.error?`<p class="error">${escapeHTML(t.error)}</p>`:''}${directoryDetails(t.directoryReview)}${historyDetails(t.historyReview)}<div class="task-actions">${['error','interrupted','cancelled'].includes(t.state)?`<button data-task="${escapeHTML(t.id)}" data-action="resume">续做</button>`:''}${['queued','running','error','interrupted'].includes(t.state)?`<button data-task="${escapeHTML(t.id)}" data-action="cancel">取消</button>`:''}</div></div>`).join(''):'<p>暂无任务。请在侧栏点击“抽取关系图”开始。</p>';
+  $('tasks').innerHTML=s.tasks.length?s.tasks.map(t=>`<div class="task-row"><b>${escapeHTML(t.title)} · ${labels[t.state]||escapeHTML(t.state)}</b><p>${escapeHTML(t.branchId)} · 已完成 ${t.processed} / ${t.total} 轮 · 剩余 ${Math.max(0,t.total-t.processed)} 轮</p><p>${new Date(t.createdAt).toLocaleString('zh-CN')}</p>${t.error?`<p class="error">${escapeHTML(t.error)}</p>${diagnosticDetails(t.errorDiagnostics)}`:''}${directoryDetails(t.directoryReview)}${historyDetails(t.historyReview)}<div class="task-actions">${['error','interrupted','cancelled'].includes(t.state)?`<button data-task="${escapeHTML(t.id)}" data-action="resume">续做</button>`:''}${['queued','running','error','interrupted'].includes(t.state)?`<button data-task="${escapeHTML(t.id)}" data-action="cancel">取消</button>`:''}</div></div>`).join(''):'<p>暂无任务。请在侧栏点击“抽取关系图”开始。</p>';
   const all=await chrome.storage.local.get(null), records=Object.entries(all).filter(([k])=>k.startsWith('conversation:')).map(([,r])=>r);
   const selection=$('versionConversation').value;
   const options=records.map(r=>`<option value="${escapeHTML(r.key)}">${escapeHTML(r.title)}</option>`).join('');

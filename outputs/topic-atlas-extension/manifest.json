@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "对话脉络 · Topic Atlas",
   "description": "自动读取对话到本机；可选连接模型 API，生成主题摘要与关系图。",
-  "version": "0.7.1",
+  "version": "0.7.11",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "sidePanel", "activeTab", "scripting", "alarms", "unlimitedStorage"],
   "options_page": "settings.html",

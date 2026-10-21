@@ -4,16 +4,16 @@ const dir='outputs/topic-atlas-extension/';let passed=0;
 const pass=s=>{passed++;console.log('PASS',s);};
 const flush=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate);};
 function page(name){
- const html=fs.readFileSync(dir+name+'.html','utf8'),nodes=new Map(),calls=[],permissions=[];
+ const html=fs.readFileSync(dir+name+'.html','utf8'),nodes=new Map(),calls=[],permissions=[],events={};
  for(const match of html.matchAll(/\bid="([^"]+)"/g)){
   const id=match[1];assert(!nodes.has(id),'duplicate ID '+id);
   const classes=new Set(),tag=html.match(new RegExp('<[^>]+\\bid="'+id+'"[^>]*>'))?.[0]||'';nodes.set(id,{id,value:'',checked:false,disabled:false,hidden:/\bhidden\b/.test(tag),textContent:'',innerHTML:'',dataset:{},
    classList:{toggle(c,on){if(on)classes.add(c);else classes.delete(c);},contains:c=>classes.has(c),remove:c=>classes.delete(c),add:c=>classes.add(c)},
-   setAttribute(k,v){this[k]=v;},addEventListener(){},querySelectorAll:()=>[],focus(){},showModal(){this.open=true;},close(){this.open=false;}});
+   listeners:{},setAttribute(k,v){this[k]=v;},addEventListener(k,f){this.listeners[k]=f;},querySelectorAll:()=>[],focus(){},showModal(){this.open=true;},close(){this.open=false;}});
  }
  const record=makeRecord(2),memory={['conversation:'+record.key]:record};
  let profiles,provider='deepseek',prompt='Saved fixture prompt',tasks=[],opened=0,grant=true;
- const document={getElementById(id){assert(nodes.has(id),'missing DOM ID '+id);return nodes.get(id);},querySelectorAll:()=>[],addEventListener(){}};
+ const document={getElementById(id){assert(nodes.has(id),'missing DOM ID '+id);return nodes.get(id);},querySelectorAll:()=>[],addEventListener(k,f){(events[k]||=[]).push(f);}};
  const c=vm.createContext({document,URL,TextEncoder,TextDecoder,crypto:globalThis.crypto,structuredClone,console,setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,confirm:()=>true,
   chrome:{permissions:{request:async p=>{permissions.push(p);return grant;}},runtime:{openOptionsPage:async()=>{opened++;},onMessage:{addListener(){}},sendMessage:async m=>{
    calls.push(structuredClone(m));
@@ -30,7 +30,7 @@ function page(name){
  profiles=vm.runInContext("Object.fromEntries(Object.entries(AtlasAI.presets).map(([id,p])=>[id,AtlasAI.config({provider:id,baseUrl:id==='custom'?'https://fixture.example/v1':p.baseUrl,model:'fixture-model'})]))",c);
  for(const p of Object.values(profiles))p.hasKey=true;
  for(const [,file] of html.matchAll(/<script src="([^"]+)"><\/script>/g))if(!['core.js','prompt.js','ai.js'].includes(file))vm.runInContext(fs.readFileSync(dir+file,'utf8'),c,{filename:file});
- return {html,nodes,c,calls,permissions,record,memory,setTasks:v=>tasks=v,setGrant:v=>grant=v,profile:id=>profiles[id],opened:()=>opened};
+ return {html,nodes,c,calls,permissions,events,record,memory,setTasks:v=>tasks=v,setGrant:v=>grant=v,profile:id=>profiles[id],opened:()=>opened};
 }
 async function run(){
  const p=page('panel');await flush();

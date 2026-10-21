@@ -4,7 +4,7 @@ const clone=v=>structuredClone(v),dir='outputs/topic-atlas-extension/';
 function makeRecord(count=13,padding='') {
  const messages=[];
  for(let i=0;i<count;i++)messages.push({id:'u'+i,role:'user',text:(i%3===1?'转向竞品调查':'回到主题架构')+' 第'+i+'轮 '+padding},{id:'a'+i,role:'assistant',text:'助手给出第'+i+'轮的建议。'});
- return {key:'ChatGPT:https://chatgpt.com/c/batch',url:'https://chatgpt.com/c/batch',platform:'ChatGPT',title:'batch',annotations:{},messages,allMessages:messages,branches:[{id:'current',label:'网页当前路径',messageIds:messages.map(m=>m.id)}],source:{type:'chatgpt-api',completeness:'returned-tree'}};
+ return {key:'ChatGPT:https://chatgpt.com/c/batch',url:'https://chatgpt.com/c/batch',platform:'ChatGPT',title:'batch',annotations:{},messages,allMessages:messages,branches:[{id:'current',label:'网页当前路径',messageIds:messages.map(m=>m.id)}],source:{type:'chatgpt-api',filterVersion:A.answerFilterVersion,completeness:'returned-tree'}};
 }
 function modelOutput(input) {
  const topics=[],timeline=[],relations=[],known=[...(input.context?.topics || [])];let previous=input.context?.lastTopicId;

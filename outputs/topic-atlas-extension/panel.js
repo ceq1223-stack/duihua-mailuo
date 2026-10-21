@@ -1,17 +1,20 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let records = [], selectedKey = '', view = 'timeline', editTurn = null, tabId = null, selectedBranch = 'current', followActive = true;
+const launch=typeof location!=='undefined'?new URL(location.href).searchParams:null;
+const standaloneGraph=!!launch?.get('conversation');
+let records = [], selectedKey = launch?.get('conversation')||'', view = launch?.get('view')==='graph'?'graph':'timeline', editTurn = null, tabId = null, selectedBranch = launch?.get('branch')||'current', followActive = !standaloneGraph;
 let aiConfig = null, extracting = null, topicSelection = null, directRequest = false;
 let queueTasks = [];
+let graphModel=null, graphUI={selected:null,edge:null,query:'',returns:false,x:0,y:0,scale:1,viewport:false}, timelineSelection=null;
 let statusTimer;
 const rawRecord = () => records.find(r => r.key === selectedKey);
 const current = () => {
   const record = rawRecord();
   const branch = record?.branches?.find(b => b.id === selectedBranch);
-  if (!record?.allMessages || !branch) return record;
+  if (!record?.allMessages || !branch) return record?{...record,messages:Atlas.answerMessages(record.messages)}:record;
   const byId = new Map(record.allMessages.map(m => [m.id, m]));
-  return { ...record, messages: branch.messageIds.map(id => byId.get(id)).filter(Boolean) };
+  return { ...record, messages:Atlas.answerMessages(branch.messageIds.map(id => byId.get(id)).filter(Boolean)) };
 };
 function status(text, error = false) { clearTimeout(statusTimer); $('status').hidden=!error; $('status').textContent=error?text:''; $('status').classList.toggle('error',error); if(error)statusTimer=setTimeout(()=>{$('status').hidden=true;},8000); }
 function quietStatus(text) { $('settingsButton').title='设置 · '+text; }
@@ -40,11 +43,12 @@ async function load(followTab = false) {
   $('archive').innerHTML = records.length ? records.map(r => `<option value="${esc(r.key)}">${esc(r.platform)} · ${esc(r.title)}</option>`).join('') : '<option value="">选择本机对话记录</option>';
   $('archive').value = selectedKey;
   if (!rawRecord()?.branches?.some(b => b.id === selectedBranch)) selectedBranch = 'current';
-  render();
+  render();setView(view);
 }
 function setView(next) {
   view = next; $('timeline').hidden = view !== 'timeline'; $('graph').hidden = view !== 'graph';
   $('timelineTab').setAttribute('aria-selected', view === 'timeline'); $('graphTab').setAttribute('aria-selected', view === 'graph');
+  if(view==='graph'){if(!graphUI.viewport)fitGraph();else graphTransform();}
 }
 function messageHTML(message, summary) {
   const ai = message.role === 'assistant', unknown = message.role === 'unknown';
@@ -58,7 +62,7 @@ function render() {
   renderProgress();
   const analysis = AtlasAI.displayAnalysis(rawRecord(), selectedBranch);
   const result = analysis?.result || null;
-  if(topicSelection&&(topicSelection.key!==selectedKey||topicSelection.branchId!==selectedBranch||!result?.topics.some(t=>t.id===topicSelection.topicId))){$('topicDialog').close();topicSelection=null;}
+  if(topicSelection&&(topicSelection.key!==selectedKey||topicSelection.branchId!==selectedBranch||(result&&!result.topics.some(t=>t.id===topicSelection.topicId)))){topicSelection=null;graphUI.selected=null;graphUI.edge=null;}
   if (!record) {
     delete $('graph').dataset.publication;delete $('graph').dataset.context;
     $('timeline').innerHTML = '<p class="empty">打开一条 ChatGPT 对话后会自动读取。<br>切换对话时自动跟随，无需点击采集。<br>消息仅保存到本机，可随时关闭自动读取。</p>';
@@ -70,10 +74,10 @@ function render() {
   $('timeline').innerHTML = ts.map((t, i) => {
     const a = record.annotations[t.id] || {};
     const row = result?.timeline.find(row => row.roundId === t.id), topic = result?.topics.find(n => n.id === row?.primaryTopicId);
-    const title = row?.title || a.topic || '待命名主题 ' + (i + 1);
+    const title = row?.title || a.topic || '待命名标题 ' + (i + 1);
     const createdAt = (t.user || t.assistants[0] || t.unknowns?.[0])?.createdAt;
     const time = createdAt && !Number.isNaN(Date.parse(createdAt)) ? new Date(createdAt).toLocaleString('zh-CN') : '';
-    return `<article class="turn" id="turn-${i}" data-turn-id="${esc(t.id)}"><span class="number">${i + 1}</span><div class="heading"><div>${topic ? `<span class="topic-tag">${esc(topic.name)}</span>` : ''}<b class="${row || a.topic ? '' : 'draft'}">${esc(title)}</b>${time ? `<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>` : ''}${a.summary ? `<p class="summary-text">${esc(a.summary)}</p>` : ''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i + 1} 轮主题">编辑</button></div>${t.unknowns ? t.unknowns.map(m => messageHTML(m)).join('') : t.user ? messageHTML(t.user, row?.userSummary) : '<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns ? '' : t.assistants.length ? t.assistants.map(m => messageHTML(m, row?.assistantSummary)).join('') : '<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</article>`;
+    return `<article class="turn${timelineSelection?.key===selectedKey&&timelineSelection.branchId===selectedBranch&&timelineSelection.turnIds.includes(t.id)?' target':''}" id="turn-${i}" data-turn-id="${esc(t.id)}"><span class="number">${i + 1}</span><div class="heading"><div>${topic ? `<span class="topic-tag">${esc(topic.name)}</span>` : ''}<b class="${row || a.topic ? '' : 'draft'}">${esc(title)}</b>${time ? `<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>` : ''}${a.summary ? `<p class="summary-text">${esc(a.summary)}</p>` : ''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i + 1} 轮主题">编辑</button></div>${t.unknowns ? t.unknowns.map(m => messageHTML(m)).join('') : t.user ? messageHTML(t.user, row?.userSummary) : '<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns ? '' : t.assistants.length ? t.assistants.map(m => messageHTML(m, row?.assistantSummary)).join('') : '<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</article>`;
   }).join('');
   document.querySelectorAll('.turn details').forEach(n => { if (openMessages.has(n.closest('.message').querySelector('[data-message]')?.dataset.message)) n.open = true; });
   renderGraph(record, result);
@@ -84,38 +88,41 @@ function renderProgress() {
   $('aiState').textContent=`AI 归纳 · ${state.label}${time}`;
   $('aiState').dataset.state=state.state;
 }
-function renderGraph(record, result) {
-  const { nodes, edges } = result ? {
-    nodes: result.topics.map(t => ({ id: t.id, label: t.name, summary: t.summary, turnIds: t.roundIds, named: true })),
-    edges: result.relations.map(e => ({ ...e, turnId: e.atRoundId }))
-  } : (() => { const graph = Atlas.graph(record); return { nodes: graph.nodes.map(n => ({ ...n, id: n.label })), edges: graph.edges }; })();
-  if (!nodes.length) { delete $('graph').dataset.publication;delete $('graph').dataset.context;$('graph').innerHTML = '<p class="empty">暂无可读主题。</p>'; return; }
-  const width = 350, height = Math.max(150, nodes.length * 92 + 25);
-  const positions = new Map(nodes.map((n, i) => [n.id, { x: 44, y: 16 + i * 92 }]));
-  const lines = edges.map((edge, index) => {
-    const a = positions.get(edge.from), b = positions.get(edge.to);
-    const back = b.y < a.y;
-    const lane = back ? 294 + (index % 3) * 12 : 23 + (index % 3) * 7;
-    const d = edge.type === 'flow' && Math.abs(b.y - a.y) === 92 ? `M164 ${a.y + 58} L164 ${b.y}` : `M${back ? 284 : 44} ${a.y + 29} C${lane} ${a.y + 29} ${lane} ${b.y + 29} ${back ? 284 : 44} ${b.y + 29}`;
-    const type = { flow: '推进', branch: '分支', return: '回归' }[edge.type];
-    const from = nodes.find(n => n.id === edge.from)?.label, to = nodes.find(n => n.id === edge.to)?.label;
-    return `<path d="${d}" class="edge ${edge.type}" marker-end="url(#arrow)"><title>${esc(from)} → ${esc(to)} · ${type} · ${result ? esc(edge.reason) + (edge.inferred ? ' · 上下文推断' : ' · 有原文依据') : edge.manual ? '手动标注' : '按出现顺序推导'}</title></path>${result ? `<text class="edge-label" x="${back ? 290 : 4}" y="${(a.y + b.y) / 2 + 29}">${esc(edge.label.slice(0, 8))}</text>` : ''}`;
-  }).join('');
-  const html = `<div class="graph-wrap"><svg viewBox="0 0 ${width} ${height}" role="group" aria-label="主题关系图"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6" fill="none" stroke="#a9b5c7"/></marker></defs>${lines}${nodes.map(n => {
-    const p = positions.get(n.id), label = Atlas.excerpt(n.label, 16);
-    return `<g transform="translate(${p.x},${p.y})" class="node" role="button" tabindex="0" data-topic="${esc(n.id)}" aria-label="查看主题：${esc(n.label)}"><title>${esc(n.summary || n.label)}</title><rect width="240" height="58" rx="6"/><text x="14" y="25">${esc(label)}</text><text x="14" y="44" class="small">${n.turnIds.length} 轮讨论${n.named ? '' : ' · 尚未命名'} · ${result ? '点击查看摘要与依据' : '点击定位'}</text></g>`;
-  }).join('')}</svg></div><div class="legend">实线：推进　虚线：分支　点线：回归<p>${result ? '关系由模型归纳，摘录已核对原文。点击主题查看摘要、关系依据及对应轮次。' : '尚未使用 AI 抽取；当前按人工标注和出现顺序连接。'}</p></div>`;
-  const identity=JSON.stringify([selectedKey,selectedBranch,html]);
-  if($('graph').dataset.publication===identity)return;
-  const sameContext=$('graph').dataset.context===JSON.stringify([selectedKey,selectedBranch]);
+function renderGraph(record,result) {
+  const host=$('graph'),context=JSON.stringify([selectedKey,selectedBranch]);
+  const sameContext=host.dataset.context===context;
+  if(!sameContext)graphUI={selected:null,edge:null,query:'',returns:false,x:0,y:0,scale:1,viewport:false};
+  graphModel=AtlasGraphView.model(record,result,Atlas);
+  if(!graphModel.nodes.length){delete host.dataset.publication;delete host.dataset.context;host.innerHTML='<p class="empty">暂无可读主题。</p>';return;}
+  if(!graphModel.byId.has(graphUI.selected)){graphUI.selected=null;graphUI.edge=null;}
+  const html=AtlasGraphView.render(graphModel,graphUI,selectedKey,selectedBranch),identity=JSON.stringify([context,html]);
+  if(host.dataset.publication===identity)return;
   const scroll=document.scrollingElement,top=scroll?.scrollTop;
-  const wrap=$('graph').querySelector?.('.graph-wrap'),left=wrap?.scrollLeft;
-  const focused=$('graph').contains?.(document.activeElement)?document.activeElement.closest?.('[data-topic]')?.dataset.topic:null;
-  // One synchronous replacement; polling and partial checkpoints leave the old DOM intact.
-  $('graph').innerHTML=html;
-  $('graph').dataset.publication=identity;$('graph').dataset.context=JSON.stringify([selectedKey,selectedBranch]);
-  if(sameContext){if(scroll&&top!==undefined)scroll.scrollTop=top;const nextWrap=$('graph').querySelector?.('.graph-wrap');if(nextWrap&&left!==undefined)nextWrap.scrollLeft=left;
-    if(focused)[...$('graph').querySelectorAll('[data-topic]')].find(n=>n.dataset.topic===focused)?.focus({preventScroll:true});}
+  const search=host.querySelector?.('[data-graph-search]'),searchFocused=search&&document.activeElement===search,caret=search?.selectionStart;
+  // Replace only on actual publication or explicit interaction, preserving the old
+  // graph through polling, checkpoints, failures and appended source messages.
+  host.innerHTML=html;host.dataset.publication=identity;host.dataset.context=context;
+  if(sameContext&&scroll&&top!==undefined)scroll.scrollTop=top;
+  if(searchFocused){const input=host.querySelector?.('[data-graph-search]');input?.focus({preventScroll:true});try{input?.setSelectionRange(caret,caret);}catch{}}
+  if(view==='graph'&&!graphUI.viewport)fitGraph();else graphTransform();
+}
+function graphTransform(){const world=$('graph').querySelector?.('.graph-world');if(world)world.style.transform=`translate(${graphUI.x}px,${graphUI.y}px) scale(${graphUI.scale})`;}
+function fitGraph(){const stage=$('graph').querySelector?.('.graph-stage'),r=stage?.getBoundingClientRect?.();if(!graphModel||!r?.width||!r.height)return;graphUI.scale=Math.max(.08,Math.min((r.width-20)/graphModel.width,(r.height-30)/graphModel.height,1));graphUI.x=(r.width-graphModel.width*graphUI.scale)/2;graphUI.y=(r.height-graphModel.height*graphUI.scale)/2;graphUI.viewport=true;graphTransform();}
+function zoomGraph(factor,x,y){const r=$('graph').querySelector?.('.graph-stage')?.getBoundingClientRect?.();if(!r)return;x=x??r.width/2;y=y??r.height/2;const next=Math.max(.08,Math.min(2,graphUI.scale*factor));graphUI.x=x-(x-graphUI.x)*next/graphUI.scale;graphUI.y=y-(y-graphUI.y)*next/graphUI.scale;graphUI.scale=next;graphUI.viewport=true;graphTransform();}
+function graphAction(action){
+  if(action==='expand')return chrome.tabs.create({url:chrome.runtime.getURL('panel.html')+'?view=graph&conversation='+encodeURIComponent(selectedKey)+'&branch='+encodeURIComponent(selectedBranch),active:true}).catch(error=>status(error.message,true));
+  if(action==='fit')return fitGraph();
+  if(action==='in'||action==='out')return zoomGraph(action==='in'?1.25:.8);
+  if(action==='canvas')return $('graph').querySelector?.('.graph-stage')?.scrollIntoView?.({behavior:'smooth',block:'center'});
+  graphUI.selected=null;graphUI.edge=null;topicSelection=null;
+  if(action==='reset'){graphUI.query='';graphUI.returns=false;}
+  renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
+  if(action==='reset')fitGraph();
+}
+function openGraphRound(id,key,branch){
+  if(key!==selectedKey||branch!==selectedBranch){status('对话或分支已切换，请重新选择标题。',true);return;}
+  if(!graphModel?.timeline.some(r=>r.roundId===id)||!Atlas.turns(current()?.messages||[]).some(t=>t.id===id)){status('对应轮次尚未读取，无法定位时间线。',true);return;}
+  highlightTurns([id]);
 }
 async function checkStatus() { try { const r=await toPage({type:'status'});if(r?.lastError)quietStatus(r.lastError); } catch { /* Routine capture status stays silent. */ } }
 function edit(id) {
@@ -158,43 +165,42 @@ async function locate(id) {
     status('已在原网页定位并高亮消息。');
   } catch (error) { status(error.message, true); }
 }
-function locateTopic(label) {
-  const record = current(), analysis = AtlasAI.displayAnalysis(rawRecord(), selectedBranch);
-  if (analysis) {
-    const topic = analysis.result.topics.find(t => t.id === label);
-    if (!topic) return;
-    topicSelection = { key: selectedKey, branchId: selectedBranch, topicId:topic.id, turnIds: topic.roundIds };
-    const roundNumbers = new Map(Atlas.turns(record.messages).map((t, i) => [t.id, i + 1]));
-    $('topicTitle').textContent = topic.name; $('topicSummary').textContent = topic.summary;
-    const evHTML = ev => ev.map(e => `<blockquote>第 ${roundNumbers.get(e.roundId)} 轮 · ${esc(e.role === 'user' ? 'You' : e.role === 'assistant' ? 'AI' : '未知角色')}<br>${esc(e.quote)}</blockquote>`).join('');
-    $('topicEvidence').innerHTML = `<details open><summary>对应轮次：${topic.roundIds.map(id => roundNumbers.get(id)).join('、')}</summary>${analysis.result.timeline.filter(t => topic.roundIds.includes(t.roundId)).map(t => evHTML(t.evidence)).join('')}</details>` + analysis.result.relations.filter(e => e.from === label || e.to === label).map(e => `<details><summary>${esc(e.label)} · ${e.inferred ? '上下文推断' : '原文依据'}</summary><p>${esc(e.reason)}</p>${evHTML(e.evidence)}</details>`).join('');
-    $('topicDialog').showModal(); return;
-  }
-  const node = Atlas.graph(record).nodes.find(n => n.label === label);
-  if (!node) return;
-  highlightTurns(node.turnIds);
+function locateTopic(id) {
+  if(!graphModel?.byId.has(id))return;
+  graphUI.selected=id;graphUI.edge=null;
+  topicSelection={key:selectedKey,branchId:selectedBranch,topicId:id,turnIds:graphModel.byId.get(id).turnIds};
+  renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
+  $('graph').querySelector?.('.graph-detail')?.scrollIntoView?.({behavior:'smooth',block:'nearest'});
 }
 function highlightTurns(turnIds) {
-  const matches = [...document.querySelectorAll('.turn')].filter(n => turnIds.includes(n.dataset.turnId));
-  document.querySelectorAll('.target').forEach(n => n.classList.remove('target'));
-  matches.forEach(n => n.classList.add('target')); setView('timeline');
-  matches[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  timelineSelection={key:selectedKey,branchId:selectedBranch,turnIds:[...turnIds]};
+  const matches=[...document.querySelectorAll('.turn')].filter(n=>turnIds.includes(n.dataset.turnId));
+  document.querySelectorAll('.target').forEach(n=>n.classList.remove('target'));
+  matches.forEach(n=>n.classList.add('target'));setView('timeline');
+  matches[0]?.scrollIntoView({behavior:'smooth',block:'center'});
 }
-$('closeTopic').onclick = () => $('topicDialog').close();
-$('topicTimeline').onclick = () => { $('topicDialog').close(); if (topicSelection?.key === selectedKey && topicSelection.branchId === selectedBranch) highlightTurns(topicSelection.turnIds); };
 $('automatic').onchange = async () => {
   try { await chrome.storage.local.set({ 'atlas:settings': { autoCapture: $('automatic').checked } }); status($('automatic').checked ? '自动读取已开启，正在跟随当前对话。' : '自动读取已关闭。'); }
   catch (error) { status(error.message, true); }
 };
 $('diagnose').onclick = async () => {
+  $('diagnose').disabled=true;
   try {
-    const result = await toPage({ type: 'diagnose' });
-    if (!result || result.error) throw new Error(result?.error || '网页未响应诊断请求，请重载扩展并刷新网页。');
-    const text = JSON.stringify(result, null, 2);
+    const tab=await activeTab(),info=Atlas.conversation(tab?.url||'');
+    let result;
+    try {result=await toPage({ type: 'diagnose' });}catch(error){result={pageDiagnosticError:error.message};}
+    if (!result) result={pageDiagnosticError:'网页未响应常规诊断请求。'};
+    let markers;
+    if(info?.platform==='ChatGPT'){
+      try{markers=(await request({type:'diagnose-message-markers',tabId:tab.id})).messageMarkers;}
+      catch(error){markers={error:error.message};}
+    }else markers={error:'消息标记诊断需要先打开 ChatGPT 的一条已保存对话。'};
+    const text = JSON.stringify({...result,messageMarkers:markers}, null, 2);
     $('diagnostic').textContent = text; $('diagnostic').hidden = false;
     try { await navigator.clipboard.writeText(text); status('采集诊断已复制，不含对话正文。'); }
     catch { status('诊断已显示在下方，请选中复制。不含对话正文。'); }
   } catch (error) { status(error.message, true); }
+  finally { $('diagnose').disabled=false; }
 };
 $('timelineTab').onclick = () => setView('timeline'); $('graphTab').onclick = () => setView('graph');
 $('archive').onchange = () => { selectedKey = $('archive').value; selectedBranch = 'current'; followActive = false; render(); status('正在查看本机记录。'); };
@@ -205,6 +211,10 @@ $('editForm').onsubmit = async event => {
   catch (error) { status(error.message, true); }
 };
 document.addEventListener('click', event => {
+  const action=event.target.closest('[data-graph-action]'),round=event.target.closest('[data-round]'),edge=event.target.closest('[data-graph-edge]');
+  if(action){graphAction(action.dataset.graphAction);return;}
+  if(round){openGraphRound(round.dataset.round,round.dataset.record,round.dataset.branch);return;}
+  if(edge){const e=graphModel?.edges.find(e=>e.index===Number(edge.dataset.graphEdge));if(e){graphUI.selected=e.from;graphUI.edge=e.index;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);}return;}
   const editButton = event.target.closest('[data-edit]'), message = event.target.closest('[data-message]'), node = event.target.closest('[data-topic]');
   if (editButton) edit(editButton.dataset.edit);
   if (message) locate(message.dataset.message);
@@ -227,8 +237,8 @@ $('delete').onclick = async () => {
 };
 let updateTimer;
 chrome.storage.onChanged.addListener((changes, area) => { if (area !== 'local') return; clearTimeout(updateTimer); updateTimer = setTimeout(() => load(followActive).catch(e => quietStatus(e.message)), 150); });
-chrome.tabs.onActivated.addListener(() => { followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); });
-chrome.tabs.onUpdated.addListener((id, change) => { if (id === tabId && (change.url || change.status === 'complete')) { followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); } });
+chrome.tabs.onActivated.addListener(() => { if(standaloneGraph)return;followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); });
+chrome.tabs.onUpdated.addListener((id, change) => { if(!standaloneGraph&&id === tabId && (change.url || change.status === 'complete')) { followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); } });
 chrome.runtime.onMessage.addListener(message => { if (message.type === 'capture-error' && message.key === selectedKey) quietStatus(message.error); });
 async function refreshConfig() { aiConfig=await request({type:'ai-get-config'}); }
 $('settingsButton').onclick=()=>chrome.runtime.openOptionsPage();
@@ -266,3 +276,17 @@ async function resumeJob() {
 }
 setInterval(()=>resumeJob().catch(e=>quietStatus(e.message)),2500);
 load(true).then(checkStatus).then(refreshConfig).then(resumeJob).catch(error=>quietStatus(error.message));
+
+let graphComposing=false;
+$('graph').addEventListener('compositionstart',event=>{if(event.target.matches('[data-graph-search]'))graphComposing=true;});
+$('graph').addEventListener('compositionend',event=>{if(!event.target.matches('[data-graph-search]'))return;graphComposing=false;graphUI.query=event.target.value;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);});
+$('graph').addEventListener('input',event=>{if(graphComposing||event.isComposing||!event.target.matches('[data-graph-search]'))return;graphUI.query=event.target.value;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);});
+$('graph').addEventListener('change',event=>{if(!event.target.matches('[data-graph-returns]'))return;graphUI.returns=event.target.checked;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);});
+$('graph').addEventListener('wheel',event=>{const stage=event.target.closest('.graph-stage');if(!stage)return;event.preventDefault();const r=stage.getBoundingClientRect();zoomGraph(Math.exp(-event.deltaY*.0015),event.clientX-r.left,event.clientY-r.top);},{passive:false});
+let graphDrag=null,graphSuppressClick=false;
+$('graph').addEventListener('pointerdown',event=>{graphSuppressClick=false;const stage=event.target.closest('.graph-stage');if(!stage||event.target.closest('button,[data-graph-edge]')||event.button!==undefined&&event.button!==0||event.isPrimary===false)return;event.preventDefault?.();graphDrag={x:event.clientX,y:event.clientY,originX:graphUI.x,originY:graphUI.y,pointerId:event.pointerId,stage,moved:false};stage.classList?.add('is-panning');stage.setPointerCapture(event.pointerId);});
+$('graph').addEventListener('pointermove',event=>{if(!graphDrag||event.pointerId!==undefined&&event.pointerId!==graphDrag.pointerId)return;event.preventDefault?.();const dx=event.clientX-graphDrag.x,dy=event.clientY-graphDrag.y;if(!graphDrag.moved&&Math.hypot(dx,dy)<4)return;graphDrag.moved=true;graphUI.x=graphDrag.originX+dx;graphUI.y=graphDrag.originY+dy;graphUI.viewport=true;graphTransform();});
+function endGraphDrag(event){if(!graphDrag||event?.pointerId!==undefined&&event.pointerId!==graphDrag.pointerId)return;const drag=graphDrag;graphDrag=null;graphSuppressClick=drag.moved&&event?.type!=='pointercancel';drag.stage.classList?.remove('is-panning');if(drag.stage.hasPointerCapture?.(drag.pointerId))drag.stage.releasePointerCapture(drag.pointerId);}
+for(const name of ['pointerup','pointercancel','lostpointercapture'])$('graph').addEventListener(name,endGraphDrag);
+$('graph').addEventListener('click',event=>{if(!graphSuppressClick)return;graphSuppressClick=false;event.preventDefault();event.stopPropagation();},true);
+for(const name of ['selectstart','dragstart'])$('graph').addEventListener(name,event=>{if(event.target.closest('.graph-stage'))event.preventDefault();});

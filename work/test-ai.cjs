@@ -4,6 +4,7 @@ const A=require('../'+dir+'core.js'),AI=require('../'+dir+'ai.js');
 const clone=v=>structuredClone(v),m=(id,role,text)=>({id,nativeId:id,role,text});
 const record={key:'ChatGPT:https://chatgpt.com/c/test',platform:'ChatGPT',url:'https://chatgpt.com/c/test',title:'test',annotations:{},source:{completeness:'returned-tree'},messages:[m('u1','user','先设计主题中心架构'),m('a1','assistant','按主题组织，保留原消息。'),m('u2','user','转向竞品调查，看看相似产品'),m('a2','assistant','建议先调查功能和限制。'),m('u3','user','回到主题中心架构继续完善')]};
 record.source.type='chatgpt-api';
+record.source.filterVersion=A.answerFilterVersion;
 record.allMessages=[...record.messages,m('alt','assistant','其他分支的秘密文本')];
 record.branches=[{id:'current',label:'网页当前路径',messageIds:record.messages.map(m=>m.id)},{id:'alternate',label:'其他分支 1',messageIds:['u1','alt']}];
 const ev=(id,msg,quote,role='user')=>({roundId:id,messageId:msg,role,quote});

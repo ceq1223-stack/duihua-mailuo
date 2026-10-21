@@ -7,6 +7,9 @@ const AtlasQueue = (() => {
   const tasks=async()=>await get(queueKey)||[];
   const settings=async()=>({mode:'idle',delay:30,...await get(settingsKey)});
   const retarget=(entry,branchId)=>({...entry,result:{...entry.result,branchId}});
+  // Execution identity includes budgets and batching settings. Progress identity
+  // deliberately excludes those knobs so compatible completed work can be reused.
+  const executionSignature=task=>Atlas.hash(JSON.stringify([AtlasAI.config(task.profile),task.prompt]));
   async function store(list) { await chrome.storage.local.set({[queueKey]:list}); }
   async function archive(record,list,reason) { return AtlasLibrary.persist(record,list.filter(t=>t.key===record.key),reason); }
   function fingerprint(record,branch='current') { try { return AtlasAI.signature(record,branch); } catch { return null; } }
@@ -41,10 +44,17 @@ const AtlasQueue = (() => {
       const entry=retarget(h.entry,branchId), candidate=AtlasBatch.resume({...frozen,aiResults:{[branchId]:entry},aiDrafts:{}},branchId,prepared.input,sig,spec.profile.reuseResults);
       if(candidate.processed>best.processed) {best=candidate;frozen.aiResults={...frozen.aiResults,[branchId]:entry};frozen.aiDrafts={};}
     }
-    const duplicate=list.find(t=>t.key===record.key&&t.branchId===branchId&&t.fingerprint===prepared.fingerprint&&t.settingsSignature===sig&&['queued','running','interrupted','error'].includes(t.state));
+    const sameExecution=t=>t.key===record.key&&t.branchId===branchId&&t.fingerprint===prepared.fingerprint&&t.record?.source?.filterVersion===record.source?.filterVersion&&executionSignature(t)===executionSignature(spec);
+    const duplicate=list.find(t=>sameExecution(t)&&['queued','running'].includes(t.state));
     if(duplicate) return duplicate;
-    if(best.processed===prepared.input.rounds.length){
-      const done=list.find(t=>t.key===record.key&&t.branchId===branchId&&t.fingerprint===prepared.fingerprint&&t.settingsSignature===sig&&t.state==='done');
+    // Automation never requeues this failed/interrupted request. A user start
+    // creates a new task with the current settings, leaving the old audit intact.
+    if(!manual){
+      const stopped=list.find(t=>sameExecution(t)&&['error','interrupted'].includes(t.state));
+      if(stopped)return stopped;
+    }
+    if(!manual&&best.processed===prepared.input.rounds.length){
+      const done=list.find(t=>sameExecution(t)&&t.state==='done');
       if(done&&!AtlasBatch.briefs.missing(best.result).length)return done;
     }
     const task={id:crypto.randomUUID(),key:record.key,title:record.title,branchId,manual,rebuild:!spec.profile.reuseResults,state:'queued',createdAt:new Date().toISOString(),fingerprint:prepared.fingerprint,
@@ -58,7 +68,6 @@ const AtlasQueue = (() => {
       await enqueue(async()=>{const latest=await get('conversation:'+key);if(!latest)throw new Error('对话记录不存在。');latest.organizeEnabled=true;await chrome.storage.local.set({['conversation:'+key]:latest});});
       record.organizeEnabled=true;
       const list=await tasks(), task=await create(record,branchId,true,list);
-      if(['interrupted','error','cancelled'].includes(task.state)){task.state='queued';task.error=null;}
       await store(list); await archive(record,list,'加入整理队列');
       await chrome.storage.local.set({'atlas:queue-error':null});
       return {ok:true,id:task.id,reused:task.processed,total:task.total};
@@ -116,15 +125,14 @@ const AtlasQueue = (() => {
         for(const [key,intent]of Object.entries(intents))if(intent.due<=Date.now()){
           const record=await get('conversation:'+key);
           if(config.mode!=='off'&&record?.organizeEnabled&&completed(record)&&fingerprint(record)===intent.fingerprint){
-            // Paid automation pauses on any error until explicit resume; no retry loop.
-            if(!list.some(t=>t.key===key&&['error','interrupted'].includes(t.state))) {
-              try{await create(record,'current',false,list);await chrome.storage.local.set({'atlas:queue-error':null});}catch(e){await chrome.storage.local.set({'atlas:queue-error':e.message});}
-            }
+            // create() suppresses only an identical failed execution, not new
+            // snapshots or explicit user tasks for the same conversation.
+            try{await create(record,'current',false,list);await chrome.storage.local.set({'atlas:queue-error':null});}catch(e){await chrome.storage.local.set({'atlas:queue-error':e.message});}
           }
           delete intents[key];
         }
         await chrome.storage.local.set({'atlas:intents':intents});
-        const next=list.find(t=>t.state==='queued' && !list.some(other=>other.key===t.key&&other.id!==t.id&&['error','interrupted'].includes(other.state)));
+        const next=list.find(t=>t.state==='queued');
         if(next){
           // Earlier queued snapshots may have finished since this snapshot was created.
           // Rebase only analysis seeds, never its immutable source messages or annotations.
@@ -143,16 +151,17 @@ const AtlasQueue = (() => {
       if(!task)return;
       try {
         const library=await AtlasLibrary.state();
-        if(library.connected&&(!library.granted||library.error))throw new Error('资料库无法正常保存，请先在资料库设置中重新授权并同步，再续做。');
+        if(library.connected&&(!library.granted||library.error))throw AtlasAI.problem('资料库检查','LIBRARY_UNAVAILABLE','资料库无法正常保存，请先在资料库设置中重新授权并同步，再续做。',{nextStep:'在资料库设置检查授权和同步状态；当前状态不足以确定是授权还是写盘问题，先恢复保存能力。'});
         const result=await AtlasAPI.extract({key:task.key,branchId:task.branchId},fn=>fn(),{record:task.record,profile:task.profile,prompt:task.prompt,checkpoint:(entry,done)=>checkpoint(task.id,entry,done)});
         await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state=result.partial?'queued':'done';t.requests+=result.requests+(result.historyRequests||0)+(result.briefRequests||0);t.finishedAt=result.partial?null:new Date().toISOString();}await store(list);const r=await get('conversation:'+task.key);if(r)await archive(r,list,'队列进度保存');});
       } catch(e) {
-        await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state='error';t.error=e.message;}await store(list);});
+        const reported=AtlasAI.describeError(e,'后台任务');
+        await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state='error';t.error=reported.message;t.errorDiagnostics=structuredClone(reported.diagnostics);}await store(list);});
       }
     } finally {
       pumping=false;
       const list=await tasks(), intents=Object.values(await get('atlas:intents')||{});
-      if(list.some(t=>t.state==='queued'&&!list.some(other=>other.key===t.key&&other.id!==t.id&&['error','interrupted'].includes(other.state))))await wake();else if(intents.length)await wake(Math.min(...intents.map(i=>i.due)));
+      if(list.some(t=>t.state==='queued'))await wake();else if(intents.length)await wake(Math.min(...intents.map(i=>i.due)));
     }
   }
   async function act(id,action) {
@@ -162,7 +171,7 @@ const AtlasQueue = (() => {
       if(action==='cancel'){t.state='cancelled';AtlasAPI.cancel(t.key,t.branchId);}
       else if(['error','interrupted','cancelled'].includes(t.state)){
         if(!await get('conversation:'+t.key))throw new Error('对话记录已删除，请先从资料库恢复。');
-        t.state='queued';t.error=null;
+        t.state='queued';t.error=null;t.errorDiagnostics=null;
       }
       await store(list);return {ok:true};
     });await wake();return result;

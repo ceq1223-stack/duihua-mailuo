@@ -153,6 +153,26 @@
     }
     return messages;
   }
+  const answerFilterVersion='answer-only-v1';
+  function excludedMessage(message) {
+    const m=message||{},role=m.role||m.author?.role,kind=m.contentType||m.content?.content_type;
+    if(m.hidden||m.metadata?.is_visually_hidden_from_conversation||m.metadata?.is_user_system_message)return 'hidden';
+    if(['tool','function','system','developer'].includes(role))return 'non-dialogue-role';
+    if(role!=='assistant')return null;
+    if(['analysis','commentary'].includes(m.channel))return m.channel;
+    if(['thoughts','reasoning','analysis','tool_call','tool_result','execution_output'].includes(kind))return 'internal-content';
+    if(typeof m.recipient==='string'&&m.recipient.trim()&&m.recipient!=='all')return 'tool-recipient';
+    if(m.toolCall===true||m.metadata?.is_tool_call===true||Array.isArray(m.tool_calls)&&m.tool_calls.length||m.function_call)return 'tool-call';
+    if(m.metadata?.is_internal===true)return 'internal';
+    return null;
+  }
+  function answerMessages(messages) {
+    return (messages||[]).flatMap(m=>{
+      if(!Array.isArray(m.segments))return excludedMessage(m)?[]:[m];
+      const segments=answerMessages(m.segments);
+      return segments.length?[{...m,...segments[0],text:segments.map(s=>s.text).filter(Boolean).join('\n\n'),segments}]:[];
+    });
+  }
   function turns(messages) {
     const result = [];
     function combined(segments) {
@@ -190,15 +210,17 @@
   function normalizeChatGPT(data) {
     if (!data?.mapping || typeof data.mapping !== 'object' || Array.isArray(data.mapping)) throw new Error('SCHEMA_CHANGED');
     const mapping = data.mapping, allMessages = [], byNode = new Map();
-    let omitted = 0, unreadable = 0, empty = 0, broken = false;
-    function textParts(value, depth = 0) {
+    let omitted = 0, unreadable = 0, empty = 0, broken = false, excludedParts=0;
+    const excludedMessageIds=[],excludedByRule={};
+    function textParts(value, depth = 0, filterInternal = false) {
       if (depth > 5 || value == null) return [];
       if (typeof value === 'string') return [value];
-      if (Array.isArray(value)) return value.flatMap(v => textParts(v, depth + 1));
+      if (Array.isArray(value)) return value.flatMap(v => textParts(v, depth + 1,filterInternal));
       if (typeof value !== 'object') return [];
+      if(filterInternal&&excludedMessage({role:'assistant',contentType:value.content_type||value.type,channel:value.channel,recipient:value.recipient})){excludedParts++;return [];}
       if (typeof value.text === 'string') return [value.text];
-      if (Array.isArray(value.parts)) return textParts(value.parts, depth + 1);
-      if (typeof value.content === 'string' || (value.content && typeof value.content === 'object')) return textParts(value.content, depth + 1);
+      if (Array.isArray(value.parts)) return textParts(value.parts, depth + 1,filterInternal);
+      if (typeof value.content === 'string' || (value.content && typeof value.content === 'object')) return textParts(value.content, depth + 1,filterInternal);
       return [];
     }
     function hasMedia(value, depth = 0) {
@@ -212,9 +234,16 @@
       if (node?.parent && !mapping[node.parent]) broken = true;
       if (Array.isArray(node?.children) && node.children.some(id => !mapping[id])) broken = true;
       const m = node?.message;
-      if (!m || !['user', 'assistant'].includes(m.author?.role) || m.metadata?.is_visually_hidden_from_conversation || m.metadata?.is_user_system_message || m.channel === 'analysis') continue;
+      if(!m)continue;
+      const excluded=excludedMessage(m);
+      if(excluded){
+        excludedByRule[excluded]=(excludedByRule[excluded]||0)+1;
+        excludedMessageIds.push((m.author?.role||'unknown')+':'+(typeof m.id==='string'?m.id:nodeId));
+        continue;
+      }
+      if(!['user','assistant'].includes(m.author?.role))continue;
       const content = m.content || {};
-      const text = clean(textParts(content).filter(Boolean).join('\n'));
+      const text = clean(textParts(content,0,m.author.role==='assistant').filter(Boolean).join('\n'));
       const nonText = hasMedia(content);
       if (!text && !nonText) {
         // Empty/internal/unknown payloads are not evidence of an attachment.
@@ -225,7 +254,10 @@
       if (nonText) omitted++;
       const nativeId = typeof m.id === 'string' ? m.id : nodeId;
       const item = { id: m.author.role + ':' + nativeId, nativeId, nodeId, parentNodeId: node.parent || null,
-        childNodeIds: node.children || [], role: m.author.role, channel: m.channel || null, text: text || '［非文本消息：本版不提取附件／音视频正文］',
+        childNodeIds: node.children || [], role: m.author.role, channel: m.channel || null,
+        recipient:typeof m.recipient==='string'?m.recipient:null,contentType:typeof content.content_type==='string'?content.content_type:null,
+        endTurn:typeof m.end_turn==='boolean'?m.end_turn:null,toolCall:m.toolCall===true,
+        text: text || '［非文本消息：本版不提取附件／音视频正文］',
         nonText, status:typeof m.status === 'string' ? m.status : null, createdAt: typeof m.create_time === 'number' && Number.isFinite(m.create_time) && Math.abs(m.create_time) < 8640000000000 ? new Date(m.create_time * 1000).toISOString() : null };
       byNode.set(nodeId, item); allMessages.push(item);
     }
@@ -252,10 +284,10 @@
     if (!allMessages.length) throw new Error('NO_MESSAGES');
     const byId = new Map(allMessages.map(m => [m.id, m]));
     return { allMessages, messages: activePath.map(id => byId.get(id)).filter(Boolean),
-      branches, activeNode, source: { type: 'chatgpt-api', completeness: broken || unreadable ? 'partial' : 'returned-tree', total: allMessages.length, omittedNonText: omitted, unreadableContent: unreadable, skippedEmpty: empty,
+      branches, activeNode, source: { type: 'chatgpt-api', filterVersion:answerFilterVersion,excludedByRule,excludedMessageIds,excludedParts,completeness: broken || unreadable ? 'partial' : 'returned-tree', total: allMessages.length, omittedNonText: omitted, unreadableContent: unreadable, skippedEmpty: empty,
         note: broken ? '返回数据的当前节点或父链不完整，请选择可用分支或重试。' : unreadable ? '消息树可读取，但部分节点尚无可解析正文；没有将其当作附件或补造正文。' : '已读取接口返回的消息树；不保证包含平台未返回或已删除的历史版本。' } };
   }
-  const api = { hash, clean, excerpt, conversation, extract, diagnose, merge, turns, graph, normalizeChatGPT, pageRoots };
+  const api = { hash, clean, excerpt, conversation, extract, diagnose, merge, turns, graph, normalizeChatGPT, pageRoots,answerFilterVersion,excludedMessage,answerMessages };
   root.Atlas = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

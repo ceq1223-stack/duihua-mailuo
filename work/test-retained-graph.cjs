@@ -18,15 +18,15 @@ async function run(){
  const noOld=makeRecord(3);noOld.aiDrafts={current:publication(noOld)};assert.equal(AI.displayAnalysis(noOld,'current'),null);pass('A first-time conversation does not borrow a draft or another conversation graph');
  const p=page('panel');await flush();p.c.retained=structuredClone(entry);
  vm.runInContext("records[0].aiResults={current:retained};render();setView('graph');",p.c);
- const graph=p.nodes.get('graph'),firstHTML=graph.innerHTML;assert(firstHTML.includes('点击查看摘要与依据'));
+ const graph=p.nodes.get('graph'),firstHTML=graph.innerHTML;assert(firstHTML.includes('graph-stage'));assert(firstHTML.includes(entry.result.topics[0].name));
  p.c.appended=makeRecord(3);vm.runInContext('records[0]={...appended,aiResults:{current:retained}};render();',p.c);assert.equal(graph.innerHTML,firstHTML);pass('Actual panel rendering keeps the complete graph DOM through newly captured messages');
  p.memory['conversation:'+p.record.key]=structuredClone(vm.runInContext('rawRecord()',p.c));
  p.setTasks([{key:p.record.key,branchId:'current',state:'running'}]);await vm.runInContext('resumeJob()',p.c);assert.equal(graph.innerHTML,firstHTML);assert(p.nodes.get('aiState').textContent.includes('进行中'));
  p.setTasks([{key:p.record.key,branchId:'current',state:'error'}]);await vm.runInContext('resumeJob()',p.c);assert.equal(graph.innerHTML,firstHTML);pass('Running and failed task states leave the old graph available');
- vm.runInContext('render();',p.c);vm.runInContext("locateTopic(retained.result.topics[0].id)",p.c);assert(p.nodes.get('topicDialog').open);assert(p.nodes.get('topicEvidence').innerHTML.includes('对应轮次'));pass('A retained graph topic still opens its original summary and evidence');
+ vm.runInContext('render();',p.c);vm.runInContext("locateTopic(retained.result.topics[0].id)",p.c);assert(graph.innerHTML.includes('主题详细摘要 · AI 归纳'));assert(graph.innerHTML.includes('data-round="'+entry.result.topics[0].roundIds[0]+'"'));pass('A retained graph topic opens its original summary and linked round titles');
  const next=publication(makeRecord(3),'2026-10-18T08:04:00Z');next.result.topics[0].name='新版主题';p.c.next=next;
  p.c.document.scrollingElement={scrollTop:218};vm.runInContext("records[0].aiResults.current=next;render();",p.c);assert(graph.innerHTML.includes('新版主题'));assert.equal(p.c.document.scrollingElement.scrollTop,218);pass('Completed replacement switches synchronously and preserves the current scroll position');
- vm.runInContext("records=[];selectedKey='';render();",p.c);assert(!graph.innerHTML.includes('新版主题'));assert(!p.nodes.get('topicDialog').open);pass('Changing to an empty conversation clears the old graph and its evidence dialog');
+ vm.runInContext("records=[];selectedKey='';render();",p.c);assert(!graph.innerHTML.includes('新版主题'));assert(!graph.innerHTML.includes('主题详细摘要 · AI 归纳'));pass('Changing to an empty conversation clears the old graph and its detail');
  p.c.saved=makeRecord(3);vm.runInContext("records=[{...saved,aiResults:{current:next}}];selectedKey=saved.key;render();",p.c);assert(graph.innerHTML.includes('新版主题'));pass('Returning from an empty conversation restores the correct graph instead of leaving a stale render cache');
  console.log(`All ${passed} retained graph checks passed.`);
 }

@@ -17,18 +17,26 @@ async function receive(message, sender) {
     const settings = (await chrome.storage.local.get('atlas:settings'))['atlas:settings'];
     if (settings?.autoCapture === false) throw new Error('自动读取已暂停。');
   }
-  if (message.type === 'read-structured') {
-    const tabId = sender.tab?.id || message.tabId;
+  if (['read-structured','diagnose-message-markers'].includes(message.type)) {
+    const diagnostic=message.type==='diagnose-message-markers';
+    if(diagnostic&&!AtlasTrust.isUI(sender))throw new Error('消息标记诊断仅允许从扩展界面执行。');
+    const tabId = diagnostic?message.tabId:sender.tab?.id || message.tabId;
     if (!Number.isInteger(tabId)) throw new Error('网页连接缺少标签页信息。');
     const tab = await chrome.tabs.get(tabId), actual = Atlas.conversation(tab.url || '');
     const id = actual?.url?.match(/\/c\/([^/]+)/)?.[1];
     if (actual?.platform !== 'ChatGPT' || !id) throw new Error('请先打开一条已保存的 ChatGPT 对话。');
-    const results = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: 'MAIN', func: readChatGPTPage, args: [id] });
+    const results = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: 'MAIN', func: readChatGPTPage, args: diagnostic?[id,true]:[id] });
     const result = results[0]?.result;
     if (!result || result.error) {
       const code = result?.error || 'NO_RESULT';
       const messages = { HTTP_401: '登录状态不可用，请刷新 ChatGPT 并确认已登录。', HTTP_403: 'ChatGPT 拒绝了读取请求；请在网页确认访问验证后重试。', HTTP_404: '当前会话接口未找到，可能已删除、无权访问或接口路径已变化。', HTTP_429: '读取过于频繁，请稍后重试。', TIMEOUT: '读取超时，请检查网络后重试。', PAGE_CHANGED: '读取期间切换了对话，请重新采集。', SCHEMA_CHANGED: 'ChatGPT 返回的数据结构已变化，需要更新适配。' };
       throw new Error('结构化读取失败 [' + code + ']：' + (messages[code] || '未获得可用的 JSON 对话数据。请复制诊断信息。'));
+    }
+    if(diagnostic){
+      const after=await chrome.tabs.get(tabId);
+      if(Atlas.conversation(after.url||'')?.key!==actual.key)throw new Error('诊断期间切换了对话，结果已丢弃，请在目标对话重试。');
+      if(!result.diagnostics||result.diagnostics.schemaVersion!=='message-markers-1')throw new Error('未获得消息标记诊断，请重新加载扩展后重试。');
+      return {messageMarkers:result.diagnostics};
     }
     const normalized = Atlas.normalizeChatGPT(result.data);
     const after = await chrome.tabs.get(tabId);
@@ -86,7 +94,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     storageReady.then(() => AtlasAPI.receive(message, sender, enqueue)).then(reply, error => reply({ error: error.message || 'API 操作失败。' }));
     return true;
   }
-  if (!['read-structured', 'capture', 'annotate', 'delete', 'get-auto-settings'].includes(message?.type)) return;
+  if (!['read-structured', 'diagnose-message-markers', 'capture', 'annotate', 'delete', 'get-auto-settings'].includes(message?.type)) return;
   const task = enqueue(() => receive(message, sender));
   task.then(reply, error => reply({ error: error.message || '保存失败，可能已超出本机存储配额。请先导出备份。' }));
   return true;
