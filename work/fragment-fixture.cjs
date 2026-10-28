@@ -1,0 +1,1 @@
+module.exports=input=>({action:'fragment_memory',notes:('已读取本片；待核对：'+input.text).slice(0,input.memoryCharLimit),quotes:input.sourceKind==='original'&&input.text.trim()?[input.text.trim().slice(0,60)]:[],carry:input.evidenceIndex.map(e=>e.id).slice(0,4)});

@@ -40,7 +40,7 @@ async function run(){
  context.TextDecoder=TextDecoder;
  context.importScripts=(...files)=>files.forEach(f=>vm.runInContext(fs.readFileSync(dir+f,'utf8'),context,{filename:f}));
  vm.runInContext(fs.readFileSync(dir+'background.js','utf8'),context);
- const send=(message,sender={})=>new Promise(resolve=>listeners[0](message,sender,resolve));
+ const send=(message,sender={})=>new Promise(resolve=>listeners[0](message.type==='ai-save-config'?{...message,config:require('./capability-fixture.cjs')(message.config)}:message,sender,resolve));
  const config={provider:'openai',model:'test-model',baseUrl:'https://api.openai.com/v1',maxTokens:12000,jsonMode:true,rememberKey:false,reuseResults:false};
  let result=await send({type:'ai-save-config',config,apiKey:'TEST_ONLY_SECRET'});assert(result.ok);assert(access.some(a=>a[0]==='local'&&a[1]==='TRUSTED_CONTEXTS'));assert(!JSON.stringify(local).includes('TEST_ONLY_SECRET'));assert(JSON.stringify(session).includes('TEST_ONLY_SECRET'));pass('Session-only key and trusted-context local storage');
  const safe=await send({type:'ai-get-config'});assert(safe.profiles.openai.hasKey);assert(!JSON.stringify(safe).includes('TEST_ONLY_SECRET'));pass('Configuration read never returns secret');

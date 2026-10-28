@@ -1,1 +1,1 @@
-{"name":"topic-atlas","version":"0.7.11","private":true,"description":"Personal AI conversation timeline and topic graph browser extension","scripts":{"test":"node work/run-tests.cjs"},"engines":{"node":">=22"}}
+{"name":"topic-atlas","version":"0.8.1","private":true,"description":"Personal AI conversation timeline and topic graph browser extension","scripts":{"test":"node work/run-tests.cjs"},"engines":{"node":">=22"}}

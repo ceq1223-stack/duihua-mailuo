@@ -2,7 +2,7 @@
 (() => {
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const request=async m=>{const r=await chrome.runtime.sendMessage(m);if(r?.error)throw new Error(r.error);return r;};
-let aiConfig;
+let aiConfig,capabilityOptions={};
 function dialogStatus(id, text, error = false) { $(id).textContent = text; $(id).classList.toggle('error', error); }
 async function refreshConfig() { aiConfig=await request({type:'ai-get-config'}); }
 function fillProfile(id) {
@@ -13,12 +13,24 @@ function fillProfile(id) {
   $('inputBudgetInput').value = p.inputBudget ?? 12000; $('batchRoundsInput').value = p.batchRounds ?? 6; $('reuseResultsInput').checked = p.reuseResults !== false;
   $('jsonModeInput').checked = p.jsonMode; $('rememberKeyInput').checked = p.rememberKey;
   $('apiKeyInput').value = ''; $('modelNames').innerHTML = '';
+  fillCapability(p.capability);
   $('keyHint').textContent = p.hasKey ? '已保存 Key；留空继续使用。切换服务不会共用 Key。' : '尚未保存 Key。请从服务商 API 控制台获取。';
   dialogStatus('apiDialogStatus', '');
 }
-$('providerInput').onchange = () => fillProfile($('providerInput').value);
+$('providerInput').onchange = () => {capabilityOptions={};fillProfile($('providerInput').value);};
+function fillCapability(c){
+  $('contextWindowInput').value=c?.contextWindow||'';$('modelMaxOutputInput').value=c?.maxOutput||'';$('modelMaxInputInput').value=c?.maxInput||'';
+  $('capabilitySourceInput').value=c?.source||'';$('capabilityConfirmed').checked=!!c?.confirmed;
+  $('capabilityStatus').textContent=c?'已记录此服务和模型的能力依据；保存后用于每次请求规划。':'尚未核对模型能力；可以保存 Key 和测试连接，但归纳请求将暂停。';
+}
+$('modelInput').oninput=()=>{const c=capabilityOptions[$('modelInput').value];fillCapability(c||null);};
+$('baseUrlInput').oninput=()=>{capabilityOptions={};fillCapability(null);};
 function formConfig() {
-  return AtlasAI.config({ provider: $('providerInput').value, baseUrl: $('baseUrlInput').value, model: $('modelInput').value, maxTokens: $('maxTokensInput').value, inputBudget:$('inputBudgetInput').value, batchRounds:$('batchRoundsInput').value, reuseResults:$('reuseResultsInput').checked, jsonMode: $('jsonModeInput').checked, rememberKey: $('rememberKeyInput').checked });
+  const provider=$('providerInput').value,baseUrl=AtlasAI.endpoint(provider==='custom'?$('baseUrlInput').value:AtlasAI.presets[provider].baseUrl).baseUrl,model=$('modelInput').value.trim();
+  const c={baseUrl,model,contextWindow:Number($('contextWindowInput').value),maxOutput:Number($('modelMaxOutputInput').value),maxInput:$('modelMaxInputInput').value?Number($('modelMaxInputInput').value):null,source:$('capabilitySourceInput').value.trim(),confirmed:$('capabilityConfirmed').checked,method:'manual',checkedAt:new Date().toISOString()};
+  const config=AtlasAI.config({ provider,baseUrl,model,capability:c,maxTokens: $('maxTokensInput').value, inputBudget:$('inputBudgetInput').value, batchRounds:$('batchRoundsInput').value, reuseResults:$('reuseResultsInput').checked, jsonMode: $('jsonModeInput').checked, rememberKey: $('rememberKeyInput').checked });
+  if(c.confirmed&&!config.capability)throw new Error('模型能力字段不完整或不合法，请核对上下文、最大输出和依据。');
+  return config;
 }
 async function saveAPI(clearKey = false) {
   const config = formConfig();
@@ -26,6 +38,7 @@ async function saveAPI(clearKey = false) {
   await request({ type: 'ai-save-config', config, apiKey: $('apiKeyInput').value, clearKey });
   await refreshConfig(); $('apiKeyInput').value = '';
   $('keyHint').textContent = aiConfig.profiles[config.provider].hasKey ? 'Key 已保存；留空继续使用。' : '尚未保存 Key。';
+  $('capabilityStatus').textContent=config.capability?`能力已绑定 ${config.model}，上下文 ${config.capability.contextWindow}，模型最大输出 ${config.capability.maxOutput}；每次请求还会预留输出和安全空间。`:'能力尚未核对，正式整理请求不会发送。';
 }
 $('apiForm').onsubmit = async event => {
   event.preventDefault();
@@ -40,7 +53,8 @@ $('getModels').onclick = async () => {
   $('getModels').disabled = true;
   try {
     await saveAPI(); dialogStatus('apiDialogStatus', '正在读取模型列表，不发送对话正文……');
-    const { models } = await request({ type: 'ai-models' });
+    const { models,capabilities } = await request({ type: 'ai-models' });capabilityOptions=capabilities||{};
+    if(capabilityOptions[$('modelInput').value])fillCapability(capabilityOptions[$('modelInput').value]);
     $('modelNames').innerHTML = models.map(id => `<option value="${esc(id)}"></option>`).join('');
     dialogStatus('apiDialogStatus', `已读取 ${models.length} 个模型。请选择或填写模型 ID，再点击“测试连接”验证模型能否回复。`);
     $('modelInput').focus();

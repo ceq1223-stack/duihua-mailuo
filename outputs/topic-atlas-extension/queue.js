@@ -10,7 +10,8 @@ const AtlasQueue = (() => {
   // Execution identity includes budgets and batching settings. Progress identity
   // deliberately excludes those knobs so compatible completed work can be reused.
   const executionSignature=task=>Atlas.hash(JSON.stringify([AtlasAI.config(task.profile),task.prompt]));
-  async function store(list) { await chrome.storage.local.set({[queueKey]:list}); }
+  const summaries=list=>list.map(t=>({id:t.id,key:t.key,branchId:t.branchId,state:t.state,processed:t.processed,total:t.total,requests:t.requests,createdAt:t.createdAt,startedAt:t.startedAt,finishedAt:t.finishedAt}));
+  async function store(list) { await chrome.storage.local.set({[queueKey]:list,'atlas:queue-summary':summaries(list),'atlas:queue-details':list.map(({record,profile,prompt,...safe})=>safe)}); }
   async function archive(record,list,reason) { return AtlasLibrary.persist(record,list.filter(t=>t.key===record.key),reason); }
   function fingerprint(record,branch='current') { try { return AtlasAI.signature(record,branch); } catch { return null; } }
   function completed(record) {
@@ -29,7 +30,7 @@ const AtlasQueue = (() => {
     if (!ready) ready=lock(async()=>{
       const list=await tasks(); let changed=false;
       for(const t of list) if(['running','queued'].includes(t.state)) {t.state='interrupted';t.error='浏览器或扩展中断。已保留分段进度，请点击续做。';changed=true;}
-      if(changed) await store(list);
+      if(changed||!await get('atlas:queue-summary')||!await get('atlas:queue-details')) await store(list);
     });
     return ready;
   }
@@ -101,6 +102,7 @@ const AtlasQueue = (() => {
       t.processed=entry.roundSignatures.length;
       if(entry.history)t.historyReview=structuredClone(entry.history);
       if(entry.directory)t.directoryReview=structuredClone(entry.directory);
+      if(entry.fragments){const steps=Object.values(entry.fragments);t.fragmentProgress={documents:steps.length,completed:steps.filter(s=>s.done).length,steps:steps.reduce((n,s)=>n+(s.steps||0),0)};}
       t.record.aiDrafts={...t.record.aiDrafts,[t.branchId]:entry};
       if(complete){t.record.aiResults={...t.record.aiResults,[t.branchId]:entry};delete t.record.aiDrafts[t.branchId];}
       await enqueue(async()=>{
@@ -153,7 +155,7 @@ const AtlasQueue = (() => {
         const library=await AtlasLibrary.state();
         if(library.connected&&(!library.granted||library.error))throw AtlasAI.problem('资料库检查','LIBRARY_UNAVAILABLE','资料库无法正常保存，请先在资料库设置中重新授权并同步，再续做。',{nextStep:'在资料库设置检查授权和同步状态；当前状态不足以确定是授权还是写盘问题，先恢复保存能力。'});
         const result=await AtlasAPI.extract({key:task.key,branchId:task.branchId},fn=>fn(),{record:task.record,profile:task.profile,prompt:task.prompt,checkpoint:(entry,done)=>checkpoint(task.id,entry,done)});
-        await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state=result.partial?'queued':'done';t.requests+=result.requests+(result.historyRequests||0)+(result.briefRequests||0);t.finishedAt=result.partial?null:new Date().toISOString();}await store(list);const r=await get('conversation:'+task.key);if(r)await archive(r,list,'队列进度保存');});
+        await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state=result.partial?'queued':'done';t.requests+=result.requests+(result.historyRequests||0)+(result.briefRequests||0)+(result.fragmentRequests||0);t.finishedAt=result.partial?null:new Date().toISOString();}await store(list);const r=await get('conversation:'+task.key);if(r)await archive(r,list,'队列进度保存');});
       } catch(e) {
         const reported=AtlasAI.describeError(e,'后台任务');
         await lock(async()=>{const list=await tasks(),t=list.find(t=>t.id===task.id);if(t&&t.state!=='cancelled'){t.state='error';t.error=reported.message;t.errorDiagnostics=structuredClone(reported.diagnostics);}await store(list);});
@@ -184,8 +186,8 @@ const AtlasQueue = (() => {
     });
   }
   async function list() {
-    await init();const all=await tasks();
-    return {tasks:all.slice().reverse().map(({record,profile,prompt,...safe})=>safe),settings:await settings(),library:await AtlasLibrary.state(),notice:await get('atlas:queue-error')};
+    await init();
+    return {tasks:(await get('atlas:queue-details')||[]).slice().reverse(),settings:await settings(),library:await AtlasLibrary.state(),notice:await get('atlas:queue-error')};
   }
   async function configure(message) {
     const mode=['off','idle','immediate'].includes(message.mode)?message.mode:'idle', delay=Number(message.delay);
@@ -201,6 +203,7 @@ const AtlasQueue = (() => {
     if(!AtlasTrust.isUI(sender))throw new Error('此操作仅允许从扩展界面执行。');
     if(m.type==='queue-start')return start(m.key,m.branchId||'current');
     if(m.type==='queue-list')return list();
+    if(m.type==='queue-summary'){await init();return {tasks:(await get('atlas:queue-summary')||[]).slice().reverse(),library:await AtlasLibrary.state(),notice:await get('atlas:queue-error')};}
     if(m.type==='queue-action')return act(m.id,m.action);
     if(m.type==='queue-settings')return configure(m);
     if(m.type==='library-state')return AtlasLibrary.state();

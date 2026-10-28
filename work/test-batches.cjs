@@ -10,11 +10,11 @@ function modelOutput(input) {
  const topics=[],timeline=[],relations=[],known=[...(input.context?.topics || [])];let previous=input.context?.lastTopicId;
  for(const r of input.rounds){
   const user=r.messages.find(m=>m.role==='user'),assistant=r.messages.find(m=>m.role==='assistant');
-  const name=user.text.includes('竞品')?'竞品调查':'主题架构';
+  const name=(user.text||user.fragmentMemory?.notes||'').includes('竞品')?'竞品调查':'主题架构';
   let topic=known.find(t=>t.name===name),seen=!!topic;
   if(!topic){topic={id:(input.newTopicPrefix || 't')+(name==='竞品调查'?'research':'architecture'),name};known.push(topic)}
   let current=topics.find(t=>t.id===topic.id);if(!current){current={id:topic.id,name,brief:'讨论'+name+'的内容、方案及变化。',summary:'该主题的分段讨论摘要。',roundIds:[]};topics.push(current)}current.roundIds.push(r.roundId);
-  const evidence=[{roundId:r.roundId,messageId:user.messageId,role:'user',quote:user.text.slice(0,30)}];
+  const evidence=[{roundId:r.roundId,messageId:user.messageId,role:'user',quote:user.text?user.text.slice(0,30):user.quoteCandidates[0]}];
   timeline.push({roundId:r.roundId,primaryTopicId:topic.id,secondaryTopicIds:[],title:'整理本轮讨论',userSummary:'用户讨论'+name,assistantSummary:assistant?'助手提供本轮建议':null,evidence});
   if(previous && previous!==topic.id)relations.push({from:previous,to:topic.id,type:seen?'return':'branch',atRoundId:r.roundId,label:seen?'回归主题':'探索分支',reason:'根据本轮用户的明确讨论方向。',inferred:false,evidence});
   previous=topic.id;
@@ -22,14 +22,14 @@ function modelOutput(input) {
  return {schemaVersion:'1.0',branchId:input.branchId,topics,timeline,relations,warnings:[]};
 }
 function harness(record){
- const state={['conversation:'+record.key]:clone(record)},session={},listeners=[],changes=[],calls=[],historyCalls=[],briefCalls=[];
+ const state={['conversation:'+record.key]:clone(record)},session={},listeners=[],changes=[],calls=[],historyCalls=[],briefCalls=[],fragmentCalls=[];
  const storage=store=>({get:async key=>({[key]:clone(store[key])}),set:async obj=>Object.assign(store,clone(obj)),remove:async key=>delete store[key],setAccessLevel:async()=>{}});
  let responder=async (url,options,input)=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(modelOutput(input))}}],usage:{prompt_tokens:100,completion_tokens:200,total_tokens:300}}));
- let historyResponder=async input=>require('./history-fixture.cjs').response(require('./history-fixture.cjs').selection(input)),briefResponder=async input=>require('./history-fixture.cjs').response(require('./history-fixture.cjs').briefs(input));
- const ctx=vm.createContext({URL,console,AbortController,TextDecoder,setTimeout,clearTimeout,setInterval,clearInterval,fetch:async(url,options)=>{const body=JSON.parse(options.body),input=JSON.parse(body.messages[1].content);if(input.stage==='topic-briefs'){briefCalls.push({url,body,input});return briefResponder(input,options);}if(input.stage==='history-select'){historyCalls.push({url,body,input});return historyResponder(input,options);}calls.push({url,body,input});return responder(url,options,input)},chrome:{sidePanel:{setPanelBehavior:async()=>{}},permissions:{contains:async()=>true},runtime:{getPlatformInfo:async()=>({os:'win'}),onMessage:{addListener:f=>listeners.push(f)}},storage:{local:storage(state),session:storage(session),onChanged:{addListener:f=>changes.push(f)}},tabs:{query:async()=>[],sendMessage:async()=>{}}}});
+ let historyResponder=async input=>require('./history-fixture.cjs').response(require('./history-fixture.cjs').selection(input)),briefResponder=async input=>require('./history-fixture.cjs').response(require('./history-fixture.cjs').briefs(input)),fragmentResponder=async input=>require('./history-fixture.cjs').response(require('./fragment-fixture.cjs')(input));
+ const ctx=vm.createContext({URL,console,AbortController,TextDecoder,setTimeout,clearTimeout,setInterval,clearInterval,fetch:async(url,options)=>{const body=JSON.parse(options.body),input=JSON.parse(body.messages[1].content);if(input.stage==='fragment-read'){fragmentCalls.push({url,body,input});return fragmentResponder(input,options);}if(input.stage==='topic-briefs'){briefCalls.push({url,body,input});return briefResponder(input,options);}if(input.stage==='history-select'){historyCalls.push({url,body,input});return historyResponder(input,options);}calls.push({url,body,input});return responder(url,options,input)},chrome:{sidePanel:{setPanelBehavior:async()=>{}},permissions:{contains:async()=>true},runtime:{getPlatformInfo:async()=>({os:'win'}),onMessage:{addListener:f=>listeners.push(f)}},storage:{local:storage(state),session:storage(session),onChanged:{addListener:f=>changes.push(f)}},tabs:{query:async()=>[],sendMessage:async()=>{}}}});
  ctx.importScripts=(...files)=>files.forEach(file=>vm.runInContext(fs.readFileSync(dir+file,'utf8'),ctx,{filename:file}));vm.runInContext(fs.readFileSync(dir+'background.js','utf8'),ctx);
- const send=(message,sender={})=>new Promise(resolve=>listeners[0](message,sender,resolve));
- return {state,calls,historyCalls,briefCalls,send,setResponder:fn=>responder=fn,setHistoryResponder:fn=>historyResponder=fn,setBriefResponder:fn=>briefResponder=fn};
+ const send=(message,sender={})=>new Promise(resolve=>listeners[0](message.type==='ai-save-config'?{...message,config:require('./capability-fixture.cjs')(message.config)}:message,sender,resolve));
+ return {state,calls,historyCalls,briefCalls,fragmentCalls,context:ctx,send,setResponder:fn=>responder=fn,setHistoryResponder:fn=>historyResponder=fn,setBriefResponder:fn=>briefResponder=fn,setFragmentResponder:fn=>fragmentResponder=fn};
 }
 let passed=0;function pass(s){passed++;console.log('PASS',s)}
 async function run(){

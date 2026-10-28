@@ -45,7 +45,7 @@
     const candidate = candidates[0];
     const draft=record.aiDrafts?.[branchId];
     const sameCheckpoint=draft?.settingsSignature===settings&&draft.fingerprint===AI.signature(record,branchId)&&draft.roundSignatures?.length===(candidate?.roundSignatures.length||0);
-    return { result: candidate ? JSON.parse(JSON.stringify(candidate.result)) : empty(branchId), processed: candidate?.roundSignatures.length || 0, signatures, usage: (sameCheckpoint?draft.usage:candidate?.usage) || {}, history:draft?.settingsSignature===settings?draft.history:null, directory:draft?.settingsSignature===settings?draft.directory:null };
+    return { result: candidate ? JSON.parse(JSON.stringify(candidate.result)) : empty(branchId), processed: candidate?.roundSignatures.length || 0, signatures, usage: (sameCheckpoint?draft.usage:candidate?.usage) || {}, history:draft?.settingsSignature===settings?draft.history:null, directory:draft?.settingsSignature===settings?draft.directory:null,fragments:draft?.settingsSignature===settings?draft.fragments:null,currentReadback:draft?.settingsSignature===settings?draft.currentReadback:null };
   }
   function context(result) {
     if (!result.timeline.length) return { topics: [], recentTimeline: [], lastTopicId: null };
@@ -183,6 +183,6 @@
     result.warnings = [...new Set([...result.warnings,...delta.warnings])].slice(0,1000);
     return result;
   }
-  globalThis.AtlasBatch = { estimate, empty, roundSignatures, settingsSignature, resume, next, merge, history, briefs };
+  globalThis.AtlasBatch = { estimate, empty, roundSignatures, settingsSignature, resume, next, merge, history, briefs,makeInput };
   if (typeof module !== 'undefined') module.exports = globalThis.AtlasBatch;
 })();

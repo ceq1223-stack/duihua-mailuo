@@ -21,11 +21,39 @@
     const model = String(raw.model || '').trim();
     if (model.length > 200 || /[\r\n]/.test(model)) throw new Error('模型 ID 格式不正确。');
     const maxTokens = Number(raw.maxTokens ?? 12000);
-    if (!Number.isInteger(maxTokens) || maxTokens < 512 || maxTokens > 32768) throw new Error('最大输出长度须为 512—32768 的整数。');
+    if (!Number.isInteger(maxTokens) || maxTokens < 512 || maxTokens > 1000000) throw new Error('最大输出长度须为 512—1000000 的整数；实际值还受模型能力约束。');
     const inputBudget = Number(raw.inputBudget ?? 12000), batchRounds = Number(raw.batchRounds ?? 6);
-    if (!Number.isInteger(inputBudget) || inputBudget < 4000 || inputBudget > 128000) throw new Error('单次输入预算须为 4000—128000 的整数。');
+    if (!Number.isInteger(inputBudget) || inputBudget < 4000 || inputBudget > 4000000) throw new Error('单次输入预算须为 4000—4000000 的整数；实际值还受模型能力约束。');
     if (!Number.isInteger(batchRounds) || batchRounds < 1 || batchRounds > 12) throw new Error('每段轮数须为 1—12 的整数。');
-    return { provider: raw.provider, baseUrl: ep.baseUrl, model, maxTokens, inputBudget, batchRounds, reuseResults: raw.reuseResults !== false, jsonMode: raw.jsonMode !== false, rememberKey: raw.rememberKey === true };
+    const c=raw.capability;
+    const capability=c&&c.baseUrl===ep.baseUrl&&c.model===model&&c.confirmed===true&&['manual','provider'].includes(c.method)
+      &&Number.isInteger(c.contextWindow)&&c.contextWindow>=1024&&c.contextWindow<=10000000
+      &&Number.isInteger(c.maxOutput)&&c.maxOutput>=512&&c.maxOutput<=c.contextWindow
+      &&(c.maxInput==null||Number.isInteger(c.maxInput)&&c.maxInput>0)
+      &&typeof c.source==='string'&&c.source.trim()&&c.source.length<=500
+      ?{baseUrl:ep.baseUrl,model,contextWindow:c.contextWindow,maxOutput:c.maxOutput,maxInput:Number.isInteger(c.maxInput)&&c.maxInput>0?Math.min(c.maxInput,c.contextWindow):null,source:c.source,method:c.method,confirmed:true,checkedAt:typeof c.checkedAt==='string'?c.checkedAt:null}:null;
+    return { provider: raw.provider, baseUrl: ep.baseUrl, model, maxTokens, inputBudget, batchRounds,capability, reuseResults: raw.reuseResults !== false, jsonMode: raw.jsonMode !== false, rememberKey: raw.rememberKey === true };
+  }
+  function effectiveProfile(raw) {
+    const p=config(raw),c=p.capability;
+    if(!c)throw problem('模型能力核对','MODEL_CAPABILITY_UNKNOWN','尚未核对当前服务与模型的上下文及输出上限，未发送整理请求；请在设置中获取能力信息或填写有依据的能力值并确认',{nextStep:'能力必须对应当前 API 地址和模型；小请求连接成功不能证明上下文能力。'});
+    const maxTokens=Math.min(p.maxTokens,c.maxOutput),safety=Math.max(512,Math.ceil(c.contextWindow*.08));
+    const capacity=Math.min(c.maxInput||c.contextWindow,c.contextWindow-maxTokens-safety);
+    if(capacity<512)throw problem('模型能力核对','MODEL_CAPACITY_FIXED','输出预留与安全余量已占满模型上下文；请调整输出预留或选择能力更大的模型');
+    return {...p,maxTokens,inputBudget:Math.min(p.inputBudget,capacity),safety,capacity};
+  }
+  function requestSize(body) {
+    const text=JSON.stringify({messages:body.messages,response_format:body.response_format});let upper=256,estimate=200;
+    for(const ch of text){const n=ch.codePointAt(0);upper+=n<128?1:n<2048?2:n<65536?3:4;estimate+=n<128?.4:2;}
+    return {estimatedInput:Math.ceil(estimate),upperInput:upper};
+  }
+  function checkRequest(profile,body,stage='请求规划') {
+    const c=profile.capability;
+    if(!c)throw problem(stage,'MODEL_CAPABILITY_UNKNOWN','模型能力尚未核对，未发送请求');
+    const size=requestSize(body),output=body.max_completion_tokens??body.max_tokens??profile.maxTokens;
+    if(output>c.maxOutput||size.estimatedInput>profile.inputBudget||size.upperInput>Math.min(c.maxInput||c.contextWindow,c.contextWindow-output-(profile.safety||Math.max(512,Math.ceil(c.contextWindow*.08)))))
+      throw problem(stage,'REQUEST_BUDGET','完整请求超过已核对的能力或成本预算，需要继续分片',{...size,inputBudget:profile.inputBudget,outputLimit:output,contextWindow:c.contextWindow});
+    return size;
   }
   function pathRecord(record, branchId) {
     if (!record) throw new Error('请先读取一条对话。');
@@ -227,6 +255,7 @@
     return { schemaVersion: '1.0', branchId: input.branchId, topics, timeline, relations, warnings: [...new Set([...input.knownGaps, ...warnings])] };
   }
   function analysis(record, branchId) {
+    if(record?.viewOnly)return record.viewBranch===branchId?record.viewAnalysis:null;
     let entry = record?.aiResults?.[branchId];
     try {
       const fingerprint=signature(record,branchId), count=A.turns(pathRecord(record,branchId).messages).length;
@@ -238,6 +267,7 @@
     } catch { return entry ? { ...entry, stale: true } : null; }
   }
   function displayAnalysis(record, branchId) {
+    if(record?.viewOnly)return record.viewBranch===branchId?record.viewAnalysis:null;
     const current = analysis(record,branchId);
     if (current && !current.stale) return current;
     if (!record) return null;
@@ -264,6 +294,6 @@
       return retained?{...retained,result:{...retained.result,branchId},stale:true}:null;
     } catch { return null; }
   }
-  globalThis.AtlasAI = { presets, endpoint, config, pathRecord, signature, prepare, validate, validTopicBrief, analysis, displayAnalysis, sourceQuote, problem, describeError };
+  globalThis.AtlasAI = { presets, endpoint, config,effectiveProfile,requestSize,checkRequest, pathRecord, signature, prepare, validate, validTopicBrief, analysis, displayAnalysis, sourceQuote, problem, describeError };
   if (typeof module !== 'undefined') module.exports = globalThis.AtlasAI;
 })();

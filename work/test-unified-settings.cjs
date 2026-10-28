@@ -17,15 +17,18 @@ function page(name){
  const c=vm.createContext({document,URL,TextEncoder,TextDecoder,crypto:globalThis.crypto,structuredClone,console,setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,confirm:()=>true,
   chrome:{permissions:{request:async p=>{permissions.push(p);return grant;}},runtime:{openOptionsPage:async()=>{opened++;},onMessage:{addListener(){}},sendMessage:async m=>{
    calls.push(structuredClone(m));
+   if(m.type==='view-list')return {conversations:Object.values(memory).filter(r=>r?.key).map(r=>({key:r.key,title:r.title,platform:r.platform,updatedAt:r.updatedAt}))};
+   if(m.type==='view-get'||m.type==='view-export')return {record:structuredClone(memory['conversation:'+m.key])};
+   if(m.type==='view-body'){const r=memory['conversation:'+m.key],parts=m.ids.map(id=>(r.allMessages||r.messages).find(p=>p.id===id)),text=parts.map(p=>p.text).join('\n\n'),offset=m.full?0:m.offset||0,end=m.full?text.length:Math.min(text.length,offset+16384);return {text:text.slice(offset,end),offset,end,total:text.length,...(m.full?{segments:parts}:{})};}
    if(m.type==='ai-get-config')return {provider,profiles:structuredClone(profiles),prompt};
    if(m.type==='ai-save-config'){provider=m.config.provider;profiles[provider]={...m.config,hasKey:m.clearKey?false:!!m.apiKey||profiles[provider].hasKey};return {ok:true};}
    if(m.type==='ai-test')return {model:m.config.model,elapsedMs:35,jsonMode:true};
    if(m.type==='ai-models')return {models:['fixture-model']};
    if(m.type==='ai-save-prompt'){prompt=m.prompt;return {ok:true};}
-   if(m.type==='queue-list')return {tasks,settings:{mode:'idle',delay:30},library:{connected:true,granted:true,name:'fixture library'},notice:null};
+   if(m.type==='queue-list'||m.type==='queue-summary')return {tasks,settings:{mode:'idle',delay:30},library:{connected:true,granted:true,name:'fixture library'},notice:null};
    if(m.type==='queue-start'){tasks=[{id:'new-task',key:m.key,branchId:m.branchId,state:'queued',createdAt:'2026-10-18T08:00:00Z',processed:0,total:2}];return {ok:true,total:2};}
    return {ok:true};
-  }},storage:{local:{get:async k=>k===null?structuredClone(memory):{[k]:memory[k]},set:async v=>Object.assign(memory,v)},onChanged:{addListener(){}}},tabs:{query:async()=>[{id:1,url:record.url}],sendMessage:async()=>({running:true,source:{type:'chatgpt-api'}}),onActivated:{addListener(){}},onUpdated:{addListener(){}}}}});
+  }},storage:{local:{get:async k=>k===null?structuredClone(memory):{[k]:memory[k]},set:async v=>Object.assign(memory,v)},onChanged:{addListener:f=>(events.storageChanged||=[]).push(f)}},tabs:{query:async()=>[{id:1,url:record.url}],sendMessage:async()=>({running:true,source:{type:'chatgpt-api'}}),onActivated:{addListener(){}},onUpdated:{addListener(){}}}}});
  for(const name of ['core.js','prompt.js','ai.js'])vm.runInContext(fs.readFileSync(dir+name,'utf8'),c,{filename:name});
  profiles=vm.runInContext("Object.fromEntries(Object.entries(AtlasAI.presets).map(([id,p])=>[id,AtlasAI.config({provider:id,baseUrl:id==='custom'?'https://fixture.example/v1':p.baseUrl,model:'fixture-model'})]))",c);
  for(const p of Object.values(profiles))p.hasKey=true;

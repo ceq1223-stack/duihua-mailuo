@@ -3,6 +3,10 @@ const $ = id => document.getElementById(id);
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const launch=typeof location!=='undefined'?new URL(location.href).searchParams:null;
 const standaloneGraph=!!launch?.get('conversation');
+let catalog=[],loadEpoch=0,bodyEpoch=0,bodyContext='',timelineRows=[],timelineAnalysis=null;
+const bodyPages=new Map(),pendingBodies=new Map(),openBodies=new Set(),bodyOffsets=new Map();
+let messageRoundIds=new Map(),messageMetadata=new Map();
+let messageGroups=new Map();
 let records = [], selectedKey = launch?.get('conversation')||'', view = launch?.get('view')==='graph'?'graph':'timeline', editTurn = null, tabId = null, selectedBranch = launch?.get('branch')||'current', followActive = !standaloneGraph;
 let aiConfig = null, extracting = null, topicSelection = null, directRequest = false;
 let queueTasks = [];
@@ -33,26 +37,79 @@ async function toPage(message) {
   }
 }
 async function load(followTab = false) {
-  const all = await chrome.storage.local.get(null);
-  $('automatic').checked = all['atlas:settings']?.autoCapture !== false;
-  records = Object.entries(all).filter(([key]) => key.startsWith('conversation:')).map(([, record]) => record).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const tab = await activeTab(); tabId = tab?.id;
-  const info = Atlas.conversation(tab?.url || '');
-  if (followTab && records.some(r => r.key === info?.key)) { if (selectedKey !== info.key) selectedBranch = 'current'; selectedKey = info.key; }
-  if (!records.some(r => r.key === selectedKey)) selectedKey = records[0]?.key || '';
-  $('archive').innerHTML = records.length ? records.map(r => `<option value="${esc(r.key)}">${esc(r.platform)} · ${esc(r.title)}</option>`).join('') : '<option value="">选择本机对话记录</option>';
-  $('archive').value = selectedKey;
-  if (!rawRecord()?.branches?.some(b => b.id === selectedBranch)) selectedBranch = 'current';
+  const epoch=++loadEpoch;
+  if(!rawRecord())$('timeline').innerHTML='<p class="empty">正在读取本地目录；首次升级需要建立显示索引…</p>';
+  const listing=await request({type:'view-list'});
+  if(epoch!==loadEpoch)return;
+  catalog=listing.conversations||[];
+  const settings=await chrome.storage.local.get('atlas:settings');
+  $('automatic').checked=settings['atlas:settings']?.autoCapture!==false;
+  const tab=await activeTab();tabId=tab?.id;const info=Atlas.conversation(tab?.url||'');
+  if(epoch!==loadEpoch)return;
+  if(followTab&&catalog.some(r=>r.key===info?.key)){if(selectedKey!==info.key)selectedBranch='current';selectedKey=info.key;}
+  if(!catalog.some(r=>r.key===selectedKey)){selectedKey=catalog[0]?.key||'';selectedBranch='current';}
+  $('archive').innerHTML=catalog.length?catalog.map(r=>`<option value="${esc(r.key)}">${esc(r.platform)} · ${esc(r.title)}</option>`).join(''):'<option value="">选择本机对话记录</option>';
+  $('archive').value=selectedKey;
+  let record=null;
+  if(selectedKey){
+    try{record=(await request({type:'view-get',key:selectedKey,branchId:selectedBranch})).record;}
+    catch(error){if(epoch!==loadEpoch)return;if(selectedBranch==='current')throw error;selectedBranch='current';record=(await request({type:'view-get',key:selectedKey,branchId:selectedBranch})).record;}
+  }
+  if(epoch!==loadEpoch)return;
+  const context=JSON.stringify([selectedKey,selectedBranch]);
+  if(bodyContext!==context){bodyEpoch++;bodyPages.clear();pendingBodies.clear();openBodies.clear();bodyOffsets.clear();bodyContext=context;}
+  const previous=rawRecord();records=record?[record]:[];
+  if(previous?.renderRevision&&record?.renderRevision===previous.renderRevision){renderProgress();return;}
   render();setView(view);
 }
+const timelineWindow=AtlasTimeline.create($('timeline'),{
+  renderRow:rowHTML,
+  onUnmount(ids){const removed=new Set(ids);for(const cache of [bodyPages,pendingBodies])for(const key of cache.keys())if(removed.has(messageRoundIds.get(JSON.parse(key)[1])))cache.delete(key);},
+  onMount(){for(const details of $('timeline').querySelectorAll?.('details[data-body]')||[])if(openBodies.has(details.dataset.body)&&!details.open){details.open=true;loadBodyPage(details,bodyOffsets.get(details.dataset.body)||0);}}
+});
+function rowHTML(t,i){
+  const record=current(),result=timelineAnalysis;
+  const a=record.annotations?.[t.id]||{},row=result?.timeline.find(row=>row.roundId===t.id),topic=result?.topics.find(n=>n.id===row?.primaryTopicId);
+  const title=row?.title||a.topic||'待命名标题 '+(i+1),createdAt=(t.user||t.assistants[0]||t.unknowns?.[0])?.createdAt;
+  const time=createdAt&&!Number.isNaN(Date.parse(createdAt))?new Date(createdAt).toLocaleString('zh-CN'):'';
+  return `<article class="turn${timelineSelection?.key===selectedKey&&timelineSelection.branchId===selectedBranch&&timelineSelection.turnIds.includes(t.id)?' target':''}" id="turn-${i}" data-turn-id="${esc(t.id)}" data-window-index="${i}" aria-posinset="${i+1}" aria-setsize="-1"><span class="number">${i+1}</span><div class="heading"><div>${topic?`<span class="topic-tag">${esc(topic.name)}</span>`:''}<b class="${row||a.topic?'':'draft'}">${esc(title)}</b>${time?`<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>`:''}${a.summary?`<p class="summary-text">${esc(a.summary)}</p>`:''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i+1} 轮主题">编辑</button></div>${t.unknowns?t.unknowns.map(m=>messageHTML(m)).join(''):t.user?messageHTML(t.user,row?.userSummary):'<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns?'':t.assistants.length?t.assistants.map(m=>messageHTML(m,row?.assistantSummary)).join(''):'<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</article>`;
+}
+async function loadBodyPage(details,offset){
+  const id=details.dataset.body,message=messageGroups.get(id),record=current();if(!message||!record||!details.open)return;
+  const refs=(message.segments||[message]).map(m=>messageMetadata.get(m.id)?.bodyRef);
+  bodyOffsets.set(id,offset);
+  const target=details.querySelector('.full'),nav=details.querySelector('.body-pages'),epoch=bodyEpoch,key=JSON.stringify([bodyContext,id,offset,refs]);
+  if(!target)return;
+  try{
+    target.textContent='正在读取本地正文…';
+    let page=bodyPages.get(key);
+    if(!page){
+      if(!pendingBodies.has(key))pendingBodies.set(key,request({type:'view-body',key:record.key,branchId:selectedBranch,revision:record.revision,ids:(message.segments||[message]).map(m=>m.id),bodyRefs:refs,offset}));
+      const pending=pendingBodies.get(key);page=await pending;if(pendingBodies.get(key)===pending)pendingBodies.delete(key);
+      if(epoch!==bodyEpoch||!details.open||details.isConnected===false)return;
+      bodyPages.set(key,page);while(bodyPages.size>4)bodyPages.delete(bodyPages.keys().next().value);
+    }
+    if(epoch!==bodyEpoch)return;
+    target.textContent=page.text;
+    if(nav)nav.innerHTML=page.total>16384?`${page.offset>0?`<button data-body-page="${Math.max(0,page.offset-16384)}">上一段</button>`:''}<span>正文 ${page.offset+1}–${page.end} / ${page.total} 字符</span>${page.end<page.total?`<button data-body-page="${page.end}">下一段</button>`:''}`:'';
+    timelineWindow.measure();
+  }catch(error){if(epoch===bodyEpoch)target.textContent=error.message;}
+}
+$('timeline').addEventListener('toggle',event=>{
+  const details=event.target;if(!details.matches?.('details[data-body]'))return;
+  if(details.open){openBodies.add(details.dataset.body);loadBodyPage(details,bodyOffsets.get(details.dataset.body)||0);}
+  else{openBodies.delete(details.dataset.body);bodyOffsets.delete(details.dataset.body);bodyPages.clear();details.querySelector('.full').textContent='';details.querySelector('.body-pages').innerHTML='';timelineWindow.measure();}
+},true);
+document.addEventListener('scroll',()=>timelineWindow.scroll(),{passive:true});
+if(typeof globalThis.addEventListener==='function')globalThis.addEventListener('resize',()=>timelineWindow.scroll(),{passive:true});
 function setView(next) {
-  view = next; $('timeline').hidden = view !== 'timeline'; $('graph').hidden = view !== 'graph';
+  view = next;timelineWindow.activate(view==='timeline'); $('timeline').hidden = view !== 'timeline'; $('graph').hidden = view !== 'graph';
   $('timelineTab').setAttribute('aria-selected', view === 'timeline'); $('graphTab').setAttribute('aria-selected', view === 'graph');
-  if(view==='graph'){if(!graphUI.viewport)fitGraph();else graphTransform();}
+  if(view==='graph'){if(current())renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);if(!graphUI.viewport)fitGraph();else graphTransform();}
 }
 function messageHTML(message, summary) {
-  const ai = message.role === 'assistant', unknown = message.role === 'unknown';
-  return `<div class="message ${ai ? 'ai' : unknown ? 'unknown' : ''}"><details><summary><span class="role">${unknown ? '角色未识别 · 待确认文本' : ai ? 'AI' : 'You'}${summary ? ' · 摘要' : ''}</span><span class="snippet ${summary ? 'ai-snippet' : ''}">${esc(summary || Atlas.excerpt(message.text))}</span></summary><div class="full">${esc(message.text)}</div></details><button class="locate" data-message="${esc(message.id)}">定位原消息</button></div>`;
+  const ai=message.role==='assistant',unknown=message.role==='unknown';
+  return `<div class="message ${ai?'ai':unknown?'unknown':''}"><details data-body="${esc(message.id)}" data-body-references="${esc((message.segments||[message]).map(m=>messageMetadata.get(m.id)?.bodyHash||m.bodyHash||'').join('|'))}"><summary><span class="role">${unknown?'角色未识别 · 待确认文本':ai?'AI':'You'}${summary?' · 摘要':''}</span><span class="snippet ${summary?'ai-snippet':''}">${esc(Atlas.excerpt(summary||message.text,240))}</span></summary><div class="full"></div><div class="body-pages"></div></details><button class="locate" data-message="${esc(message.id)}">定位原消息</button></div>`;
 }
 function render() {
   const record = current();
@@ -64,23 +121,19 @@ function render() {
   const result = analysis?.result || null;
   if(topicSelection&&(topicSelection.key!==selectedKey||topicSelection.branchId!==selectedBranch||(result&&!result.topics.some(t=>t.id===topicSelection.topicId)))){topicSelection=null;graphUI.selected=null;graphUI.edge=null;}
   if (!record) {
+    timelineWindow.clear();messageGroups.clear();
     delete $('graph').dataset.publication;delete $('graph').dataset.context;
     $('timeline').innerHTML = '<p class="empty">打开一条 ChatGPT 对话后会自动读取。<br>切换对话时自动跟随，无需点击采集。<br>消息仅保存到本机，可随时关闭自动读取。</p>';
     $('graph').innerHTML = '<p class="empty">读取对话后，点击“抽取关系图”生成主题与关系。</p>';
     return;
   }
-  const openMessages = new Set([...document.querySelectorAll('.turn details[open]')].map(n => n.closest('.message').querySelector('[data-message]')?.dataset.message));
-  const ts = Atlas.turns(record.messages);
-  $('timeline').innerHTML = ts.map((t, i) => {
-    const a = record.annotations[t.id] || {};
-    const row = result?.timeline.find(row => row.roundId === t.id), topic = result?.topics.find(n => n.id === row?.primaryTopicId);
-    const title = row?.title || a.topic || '待命名标题 ' + (i + 1);
-    const createdAt = (t.user || t.assistants[0] || t.unknowns?.[0])?.createdAt;
-    const time = createdAt && !Number.isNaN(Date.parse(createdAt)) ? new Date(createdAt).toLocaleString('zh-CN') : '';
-    return `<article class="turn${timelineSelection?.key===selectedKey&&timelineSelection.branchId===selectedBranch&&timelineSelection.turnIds.includes(t.id)?' target':''}" id="turn-${i}" data-turn-id="${esc(t.id)}"><span class="number">${i + 1}</span><div class="heading"><div>${topic ? `<span class="topic-tag">${esc(topic.name)}</span>` : ''}<b class="${row || a.topic ? '' : 'draft'}">${esc(title)}</b>${time ? `<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>` : ''}${a.summary ? `<p class="summary-text">${esc(a.summary)}</p>` : ''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i + 1} 轮主题">编辑</button></div>${t.unknowns ? t.unknowns.map(m => messageHTML(m)).join('') : t.user ? messageHTML(t.user, row?.userSummary) : '<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns ? '' : t.assistants.length ? t.assistants.map(m => messageHTML(m, row?.assistantSummary)).join('') : '<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</article>`;
-  }).join('');
-  document.querySelectorAll('.turn details').forEach(n => { if (openMessages.has(n.closest('.message').querySelector('[data-message]')?.dataset.message)) n.open = true; });
-  renderGraph(record, result);
+  timelineRows=Atlas.turns(record.messages);timelineAnalysis=result;
+  messageMetadata=new Map(record.messages.map(m=>[m.id,m]));messageRoundIds=new Map();
+  for(const t of timelineRows)for(const m of [t.user,...t.assistants,...(t.unknowns||[])].filter(Boolean))messageRoundIds.set(m.id,t.id);
+  messageGroups=new Map(timelineRows.flatMap(t=>[t.user,...t.assistants,...(t.unknowns||[])].filter(Boolean)).map(m=>[m.id,m]));
+  timelineWindow.activate(view==='timeline');
+  timelineWindow.set(timelineRows,JSON.stringify([selectedKey,selectedBranch]));
+  if(view==='graph')renderGraph(record,result);
 }
 function renderProgress() {
   const state=AtlasPanelState.describe(rawRecord(),selectedBranch,queueTasks);
@@ -89,13 +142,14 @@ function renderProgress() {
   $('aiState').dataset.state=state.state;
 }
 function renderGraph(record,result) {
+  if(!record)return;
   const host=$('graph'),context=JSON.stringify([selectedKey,selectedBranch]);
   const sameContext=host.dataset.context===context;
   if(!sameContext)graphUI={selected:null,edge:null,query:'',returns:false,x:0,y:0,scale:1,viewport:false};
   graphModel=AtlasGraphView.model(record,result,Atlas);
   if(!graphModel.nodes.length){delete host.dataset.publication;delete host.dataset.context;host.innerHTML='<p class="empty">暂无可读主题。</p>';return;}
   if(!graphModel.byId.has(graphUI.selected)){graphUI.selected=null;graphUI.edge=null;}
-  const html=AtlasGraphView.render(graphModel,graphUI,selectedKey,selectedBranch),identity=JSON.stringify([context,html]);
+  const html=AtlasGraphView.render(graphModel,graphUI,selectedKey,selectedBranch),identity=JSON.stringify([context,record.revision||Atlas.hash(html),graphUI.selected,graphUI.edge,graphUI.query,graphUI.returns]);
   if(host.dataset.publication===identity)return;
   const scroll=document.scrollingElement,top=scroll?.scrollTop;
   const search=host.querySelector?.('[data-graph-search]'),searchFocused=search&&document.activeElement===search,caret=search?.selectionStart;
@@ -126,7 +180,8 @@ function openGraphRound(id,key,branch){
 }
 async function checkStatus() { try { const r=await toPage({type:'status'});if(r?.lastError)quietStatus(r.lastError); } catch { /* Routine capture status stays silent. */ } }
 function edit(id) {
-  const record = current(), a = record.annotations[id] || {};
+  const record = current(); if(!record)return;
+  const a = record.annotations[id] || {};
   const analysis = AtlasAI.analysis(rawRecord(), selectedBranch), topicId = !analysis?.stale && analysis?.result.timeline.find(t => t.roundId === id)?.primaryTopicId;
   editTurn = id; $('topicInput').value = a.topic || analysis?.result.topics.find(t => t.id === topicId)?.name || ''; $('summaryInput').value = a.summary || ''; $('relationInput').value = a.relation || '';
   $('topicNames').innerHTML = [...new Set([...Object.values(record.annotations).map(v => v.topic).filter(Boolean), ...(analysis?.result.topics.map(t => t.name) || [])])].map(v => `<option value="${esc(v)}"></option>`).join('');
@@ -153,20 +208,23 @@ async function sendLocate(record, payload) {
   throw new Error('已打开原对话，但网页尚未连接完成。加载完成后请再次点击定位。');
 }
 async function locate(id) {
-  const record = current(), grouped = Atlas.turns(record.messages).flatMap(t => [t.user, ...t.assistants, ...(t.unknowns || [])]).filter(Boolean);
-  const message = grouped.find(m => m.id === id);
+  const record = current();if(!record)return;
+  const grouped = Atlas.turns(record.messages).flatMap(t => [t.user, ...t.assistants, ...(t.unknowns || [])]).filter(Boolean);
+  let message = grouped.find(m => m.id === id);
   if (!message) return;
   try {
     status('正在定位，必要时会自动滚动加载；操作网页可取消。');
+    const full=await request({type:'view-body',key:record.key,branchId:selectedBranch,revision:record.revision,ids:(message.segments||[message]).map(m=>m.id),bodyRefs:(message.segments||[message]).map(m=>messageMetadata.get(m.id)?.bodyRef),full:true});
+    message={...message,text:full.text,segments:full.segments};
     const target = message.segments?.find(m => m.channel === 'final') || message;
-    const segments = (message.segments || [message]).map(segment => ({ ...segment, ambiguous: record.messages.filter(m => m.role === segment.role && m.text === segment.text).length > 1 }));
+    const segments = (message.segments || [message]).map(segment => ({ ...segment, ambiguous: record.messages.filter(m => m.role === segment.role && m.bodyHash === segment.bodyHash).length > 1 }));
     const result = await sendLocate(record, { type: 'locate', key: record.key, ...message, segments, context: { inactiveBranch: selectedBranch !== 'current', pathIndex: Math.max(0, record.messages.findIndex(m => m.id === target.id)), pathNativeIds: record.messages.map(m => m.nativeId || ''), pathTexts: record.messages.map(m => m.text.slice(0, 220)) } });
     if (result?.error) throw new Error(result.error);
     status('已在原网页定位并高亮消息。');
   } catch (error) { status(error.message, true); }
 }
 function locateTopic(id) {
-  if(!graphModel?.byId.has(id))return;
+  if(!current()||!graphModel?.byId.has(id))return;
   graphUI.selected=id;graphUI.edge=null;
   topicSelection={key:selectedKey,branchId:selectedBranch,topicId:id,turnIds:graphModel.byId.get(id).turnIds};
   renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
@@ -174,6 +232,7 @@ function locateTopic(id) {
 }
 function highlightTurns(turnIds) {
   timelineSelection={key:selectedKey,branchId:selectedBranch,turnIds:[...turnIds]};
+  setView('timeline');timelineWindow.reveal(turnIds[0]);
   const matches=[...document.querySelectorAll('.turn')].filter(n=>turnIds.includes(n.dataset.turnId));
   document.querySelectorAll('.target').forEach(n=>n.classList.remove('target'));
   matches.forEach(n=>n.classList.add('target'));setView('timeline');
@@ -203,7 +262,7 @@ $('diagnose').onclick = async () => {
   finally { $('diagnose').disabled=false; }
 };
 $('timelineTab').onclick = () => setView('timeline'); $('graphTab').onclick = () => setView('graph');
-$('archive').onchange = () => { selectedKey = $('archive').value; selectedBranch = 'current'; followActive = false; render(); status('正在查看本机记录。'); };
+$('archive').onchange = () => { selectedKey = $('archive').value; selectedBranch = 'current'; followActive = false; load().catch(e=>status(e.message,true)); };
 $('cancelEdit').onclick = () => $('editor').close();
 $('editForm').onsubmit = async event => {
   event.preventDefault();
@@ -211,6 +270,7 @@ $('editForm').onsubmit = async event => {
   catch (error) { status(error.message, true); }
 };
 document.addEventListener('click', event => {
+  const pageButton=event.target.closest('[data-body-page]');if(pageButton){const details=pageButton.closest('details[data-body]');loadBodyPage(details,Number(pageButton.dataset.bodyPage));return;}
   const action=event.target.closest('[data-graph-action]'),round=event.target.closest('[data-round]'),edge=event.target.closest('[data-graph-edge]');
   if(action){graphAction(action.dataset.graphAction);return;}
   if(round){openGraphRound(round.dataset.round,round.dataset.record,round.dataset.branch);return;}
@@ -221,8 +281,9 @@ document.addEventListener('click', event => {
   if (node) locateTopic(node.dataset.topic);
 });
 document.addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key) && event.target.matches('[data-topic]')) { event.preventDefault(); locateTopic(event.target.dataset.topic); } });
-$('export').onclick = () => {
-  const record = rawRecord(); if (!record) return;
+$('export').onclick = async () => {
+  if(!rawRecord())return;
+  let record;try{record=(await request({type:'view-export',key:selectedKey})).record;}catch(error){status(error.message,true);return;}
   const blob = new Blob([JSON.stringify({ format: 'topic-atlas', version: 1, exportedAt: new Date().toISOString(), conversation: record }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob), link = document.createElement('a');
   link.href = url; link.download = 'topic-atlas-' + Atlas.hash(record.key) + '.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -236,7 +297,34 @@ $('delete').onclick = async () => {
   } catch (error) { status(error.message, true); }
 };
 let updateTimer;
-chrome.storage.onChanged.addListener((changes, area) => { if (area !== 'local') return; clearTimeout(updateTimer); updateTimer = setTimeout(() => load(followActive).catch(e => quietStatus(e.message)), 150); });
+function handleViewChanges(changes){
+  if(changes['atlas:view-error']?.newValue)status('本地显示索引更新失败：'+changes['atlas:view-error'].newValue,true);
+  if(changes['atlas:queue-summary']||changes['atlas:library']||changes['atlas:queue-error'])resumeJob().catch(e=>quietStatus(e.message));
+  if(changes['atlas:settings'])chrome.storage.local.get('atlas:settings').then(s=>{$('automatic').checked=s['atlas:settings']?.autoCapture!==false;});
+  if(changes['atlas:view-catalog']){
+    const listing=changes['atlas:view-catalog'].newValue||{};
+    clearTimeout(updateTimer);updateTimer=setTimeout(async()=>{
+      try{
+        const tab=followActive?await activeTab():null,active=Atlas.conversation(tab?.url||'');
+        if(!rawRecord()||!listing[selectedKey]||listing[selectedKey].revision!==rawRecord().revision||active&&active.key!==selectedKey&&listing[active.key]){await load(followActive);return;}
+        catalog=Object.values(listing).sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
+        $('archive').innerHTML=catalog.map(r=>`<option value="${esc(r.key)}">${esc(r.platform)} · ${esc(r.title)}</option>`).join('');$('archive').value=selectedKey;
+      }catch(error){quietStatus(error.message);}
+    },150);
+  }
+ }
+let updatePort=null;
+function connectUpdates(){
+  if(!chrome.runtime.connect||updatePort)return;
+  try{
+    const port=chrome.runtime.connect({name:'atlas-ui'});updatePort=port;
+    port.onMessage.addListener(message=>{if(message.type==='view-notice')handleViewChanges(message.changes||{});});
+    port.onDisconnect.addListener(()=>{if(updatePort===port)updatePort=null;setTimeout(connectUpdates,500);});
+  }catch(error){updatePort=null;quietStatus('轻量通知暂不可用，将检查本地目录更新。');}
+}
+connectUpdates();
+// Fallback after worker restarts: poll the small catalog, never raw storage events.
+setInterval(()=>request({type:'view-list'}).then(r=>handleViewChanges({'atlas:view-catalog':{newValue:Object.fromEntries((r.conversations||[]).map(c=>[c.key,c]))}})).catch(e=>quietStatus(e.message)),15000);
 chrome.tabs.onActivated.addListener(() => { if(standaloneGraph)return;followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); });
 chrome.tabs.onUpdated.addListener((id, change) => { if(!standaloneGraph&&id === tabId && (change.url || change.status === 'complete')) { followActive = true; load(true).then(checkStatus).catch(e => quietStatus(e.message)); } });
 chrome.runtime.onMessage.addListener(message => { if (message.type === 'capture-error' && message.key === selectedKey) quietStatus(message.error); });
@@ -260,7 +348,7 @@ $('cancelExtract').onclick = async () => {
 };
 let lastQueueState='';
 async function resumeJob() {
-  const r=await request({type:'queue-list'});
+  const r=await request({type:'queue-summary'});
   const active=r.tasks.filter(t=>['queued','running'].includes(t.state));
   const local=active.find(t=>t.key===selectedKey&&t.branchId===selectedBranch);
   extracting=local||null;queueTasks=r.tasks;
@@ -271,11 +359,11 @@ async function resumeJob() {
   $('settingsButton').title=needsAttention?'设置中有待处理事项':'设置';
   const currentTask=r.tasks.find(t=>t.key===selectedKey&&t.branchId===selectedBranch);
   const next=JSON.stringify([currentTask?.id,currentTask?.state,currentTask?.processed]);
-  if(lastQueueState&&next!==lastQueueState){await load();if(currentTask?.state==='done')status(`关系图已保存 · ${currentTask.processed} 轮 · 本次调用 ${currentTask.requests} 次 API。`);}
+  if(lastQueueState&&next!==lastQueueState){if(currentTask?.state==='done')status(`关系图已保存 · ${currentTask.processed} 轮 · 本次调用 ${currentTask.requests} 次 API。`);}
   lastQueueState=next;renderProgress();
 }
 setInterval(()=>resumeJob().catch(e=>quietStatus(e.message)),2500);
-load(true).then(checkStatus).then(refreshConfig).then(resumeJob).catch(error=>quietStatus(error.message));
+load(true).then(checkStatus).then(refreshConfig).then(resumeJob).catch(error=>status(error.message,true));
 
 let graphComposing=false;
 $('graph').addEventListener('compositionstart',event=>{if(event.target.matches('[data-graph-search]'))graphComposing=true;});

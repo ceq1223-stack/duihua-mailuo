@@ -1,4 +1,4 @@
-importScripts('core.js', 'reader.js', 'prompt.js', 'ai.js', 'batch.js', 'trust.js', 'api-worker.js', 'library.js', 'queue.js');
+importScripts('core.js', 'reader.js', 'prompt.js', 'ai.js', 'batch.js','fragments.js', 'trust.js','ui-events.js','views.js', 'api-worker.js', 'library.js', 'queue.js');
 // Deny content scripts access to stored API credentials and private archives.
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -10,6 +10,19 @@ function enqueue(operation) {
   const task = writes.then(operation); writes = task.catch(() => {}); return task;
 }
 function keyFor(key) { return 'conversation:' + key; }
+function sameCapture(old,next){
+  if(!old||old.title!==next.title||old.platform!==next.platform||old.url!==next.url)return false;
+  const a=old.allMessages||old.messages||[],b=next.allMessages||next.messages||[];
+  if(a.length!==b.length)return false;
+  const fields=['id','nativeId','role','text','channel','status','createdAt','nonText','recipient','contentType','endTurn','toolCall'];
+  for(let i=0;i<a.length;i++)for(const field of fields)if(a[i][field]!==b[i][field])return false;
+  return JSON.stringify([old.source,old.branches,old.activeNode,(old.messages||[]).map(m=>m.id)])===JSON.stringify([next.source,next.branches,next.activeNode,(next.messages||[]).map(m=>m.id)]);
+}
+function sameView(before,after){
+  if(!sameCapture(before,after)||JSON.stringify(before?.annotations)!==JSON.stringify(after.annotations))return false;
+  const entries=r=>[Object.entries(r.aiResults||{}).map(([branch,e])=>[branch,e.result,e.generatedAt,e.model,e.provider]),(r.aiHistory||[]).filter(h=>h.complete).map(h=>[h.branchId,h.entry?.result,h.entry?.generatedAt,h.entry?.model,h.entry?.provider])];
+  return JSON.stringify(entries(before))===JSON.stringify(entries(after));
+}
 async function receive(message, sender) {
   await storageReady;
   if (message.type === 'get-auto-settings') return { enabled: (await chrome.storage.local.get('atlas:settings'))['atlas:settings']?.autoCapture !== false };
@@ -51,6 +64,7 @@ async function receive(message, sender) {
     }
     const record = { ...stored, key: actual.key, url: actual.url, platform: 'ChatGPT', title: result.data.title || tab.title || 'ChatGPT', createdAt: stored?.createdAt || now, updatedAt: now, annotations, aiResults: stored?.aiResults || {}, aiDrafts: stored?.aiDrafts || {}, ...normalized };
     if ((await chrome.storage.local.get('atlas:settings'))['atlas:settings']?.autoCapture === false) throw new Error('自动读取已暂停，未保存新的读取结果。');
+    if(sameCapture(stored,record))return {unchanged:true,count:normalized.allMessages.length,activeCount:normalized.messages.length,branchCount:normalized.branches.length,source:normalized.source};
     await chrome.storage.local.set({ [key]: record });
     return { count: normalized.allMessages.length, activeCount: normalized.messages.length, branchCount: normalized.branches.length, source: normalized.source };
   }
@@ -62,6 +76,7 @@ async function receive(message, sender) {
     const key = keyFor(actual.key), stored = (await chrome.storage.local.get(key))[key];
     const now = new Date().toISOString();
     const record = { ...stored, key: actual.key, url: actual.url, platform: actual.platform, title: String(message.title || actual.platform).slice(0, 300), updatedAt: now, createdAt: stored?.createdAt || now, annotations: stored?.annotations || {}, messages: Atlas.merge(stored, incoming, now) };
+    if(sameCapture(stored,record))return {ok:true,unchanged:true};
     await chrome.storage.local.set({ [key]: record });
     return { ok: true };
   }
@@ -72,16 +87,21 @@ async function receive(message, sender) {
     const relation = ['flow', 'branch', 'return'].includes(message.relation) ? message.relation : '';
     record.annotations[message.turnId] = { topic: String(message.topic || '').trim().slice(0, 80), summary: String(message.summary || '').slice(0, 1000), relation };
     await chrome.storage.local.set({ [key]: record });
+    if(typeof AtlasViews!=='undefined')await AtlasViews.publish(record);
     return { ok: true };
   }
   if (message.type === 'delete') {
     if (!AtlasTrust.isUI(sender)) throw new Error('只能从扩展界面删除记录。');
     await chrome.storage.local.remove(keyFor(message.key));
+    if(typeof AtlasViews!=='undefined')await AtlasViews.remove(message.key);
     await chrome.storage.local.set({ 'atlas:settings': { autoCapture: false } }); return { ok: true };
   }
   return { error: '未知请求。' };
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if(typeof message?.type==='string'&&message.type.startsWith('view-')){
+    storageReady.then(()=>AtlasViews.receive(message,sender)).then(reply,error=>reply({error:error.message||'本地显示索引读取失败。'}));return true;
+  }
   if (message?.type === 'delete' && AtlasTrust.isUI(sender)) {
     storageReady.then(() => AtlasQueue.remove(message.key)).then(() => enqueue(() => receive(message,sender))).then(reply,error=>reply({error:error.message}));
     return true;
@@ -100,7 +120,15 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   return true;
 });
 chrome.storage.onChanged?.addListener((changes, area) => {
+  if(area==='local'&&typeof AtlasUpdates!=='undefined'){
+    const small={};for(const key of ['atlas:view-catalog','atlas:view-error','atlas:queue-summary','atlas:library','atlas:queue-error','atlas:settings'])if(changes[key])small[key]={newValue:changes[key].newValue};
+    if(Object.keys(small).length)AtlasUpdates.notify({type:'view-notice',changes:small});
+  }
   if (area === 'local') for (const [key,change] of Object.entries(changes)) {
+    if(key.startsWith('conversation:')&&typeof AtlasViews!=='undefined'&&(!change.newValue||!sameView(change.oldValue,change.newValue))){
+      const job=change.newValue?AtlasViews.publish(change.newValue):AtlasViews.remove(key.slice(13));
+      job.catch(error=>chrome.storage.local.set({'atlas:view-error':error.message||'显示索引更新失败。'}));
+    }
     if (key.startsWith('conversation:') && change.newValue) AtlasQueue.observe(change.newValue).catch(error => chrome.storage.local.set({'atlas:queue-error':error.message}));
   }
   if (area !== 'local' || !changes['atlas:settings']) return;
