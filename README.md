@@ -2,6 +2,8 @@
 
 Topic Atlas 是用于整理个人 AI 对话的浏览器扩展。当前源码版本为 **v0.9.3**，优先适配 Edge + ChatGPT；Gemini 的兼容能力仍需实际页面验证。
 
+[在线体验 Demo](https://ceq1223-stack.github.io/topic-atlas-demo/)：使用改写示例体验时间线、主题关系图和未展开路径，不读取账号或调用模型 API。
+
 ## 使用
 
 1. 在 Edge 打开 `edge://extensions`，启用开发人员模式。
@@ -15,11 +17,8 @@ Topic Atlas 是用于整理个人 AI 对话的浏览器扩展。当前源码版�
 ## 项目文件
 
 - `outputs/topic-atlas-extension/`：可加载的扩展源码与使用说明。
-- `outputs/topic-atlas-prd.md`、同名 HTML：产品需求文档。
-- `outputs/topic-atlas-technical-design.md`、同名 HTML：技术设计文档。
+- `demo/`：独立演示的维护源码、构建脚本和静态页面。
 - `work/test-*.cjs`、`work/history-fixture.cjs`：使用模拟数据的自动检查。
-
-产品与技术文档以 v0.6.1 为现状基线，包含下一版规划；不表示所有规划都已在 v0.9.3 实现。
 
 ## 验证
 
@@ -34,4 +33,8 @@ npm test
 ## 数据与隐私
 
 仓库只包含代码、文档和测试数据。API Key、个人对话资料库、浏览器缓存与本机历史备份不属于仓库内容。使用者自行配置资料库与 API；模型归纳会将选定内容发送至所选 API 服务。目录与浏览器授权行为详见扩展使用说明。
+
+## 开源许可
+
+本项目采用 [MIT License](LICENSE)。
 
