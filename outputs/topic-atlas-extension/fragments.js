@@ -66,7 +66,7 @@
     async function read(doc,question,limit=600){
       doc={...doc,taskRules};
       limit=Math.min(limit,Math.max(80,Math.floor(profile.maxTokens/8)));
-      const c=profile.capability;
+      const c=profile.capability||{};
       const key=A.hash(JSON.stringify(['fragments-v1',doc.id,doc.kind,doc.text,doc.historyContext,question,limit,identity,profile.inputBudget,profile.maxTokens,c.contextWindow,c.maxOutput,c.maxInput]));
       let state=cache[key];
       if(!state)state=cache[key]={cursor:0,notes:'',bank:[],carry:[],steps:0,done:false,sourceId:doc.id,characters:doc.text.length,fences:[...doc.text.matchAll(/(?:^|\n)```/g)].map(m=>m.index)};

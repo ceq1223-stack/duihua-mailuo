@@ -2,6 +2,7 @@
   'use strict';
   const A = typeof Atlas !== 'undefined' ? Atlas : require('./core.js');
   const AI = typeof AtlasAI !== 'undefined' ? AtlasAI : require('./ai.js');
+  const D=typeof AtlasDirections!=='undefined'?AtlasDirections:require('./directions.js');
   const P = typeof AtlasPrompt !== 'undefined' ? AtlasPrompt : require('./prompt.js');
   // Deliberately conservative cross-provider estimate, not a tokenizer count.
   function estimate(text) {
@@ -17,7 +18,7 @@
     // Default-prompt schema migration adds directory metadata, not new source
     // interpretation rules. Preserve legacy checkpoints; custom edits still invalidate.
     const compatiblePrompt=prompt===P.default?P.legacyDefault:prompt;
-    return A.hash(JSON.stringify(['batch-v1', profile.provider, profile.baseUrl, profile.model, profile.jsonMode, compatiblePrompt]));
+    return A.hash(JSON.stringify(['batch-v2-directions', profile.provider, profile.baseUrl, profile.model, profile.jsonMode, compatiblePrompt]));
   }
   function resume(record, branchId, input, settings, reuse = true) {
     const signatures = roundSignatures(input);
@@ -35,6 +36,8 @@
       result.topics=result.topics.map(t=>({...t,brief:null,roundIds:t.roundIds.filter(id=>ids.has(id)),summary:result.timeline.filter(r=>[r.primaryTopicId,...r.secondaryTopicIds].includes(t.id)).map(r=>r.title+'：'+[r.userSummary,r.assistantSummary].filter(Boolean).join('；')).join('\n').slice(0,1500)})).filter(t=>t.roundIds.length);
       const topics=new Set(result.topics.map(t=>t.id));
       result.relations=result.relations.filter(r=>ids.has(r.atRoundId)&&topics.has(r.from)&&topics.has(r.to)&&r.evidence.every(e=>ids.has(e.roundId)));
+      result.directions=(result.directions||[]).filter(d=>ids.has(d.sourceRoundId)&&topics.has(d.parentTopicId)).map(d=>d.discussionStatus==='expanded'&&!ids.has(d.resolvedAtRoundId)?{...d,discussionStatus:'open',expandedTopicId:null,resolvedAtRoundId:null,resolutionEvidence:[]}:d);
+      result.directionUpdates=[];
       result.warnings=[];
       try {
         AI.validate(result,{...input,previousResult:null,rounds:input.rounds.slice(0,count),manualAnnotations:input.manualAnnotations.filter(a=>ids.has(a.roundId))});
@@ -94,7 +97,7 @@
       return {topicIds,roundIds,uncertain:raw.uncertain===true,reason:raw.reason};
     }
     function expand(result,full,offset,chosen) {
-      if(chosen.topicIds.length>24||chosen.roundIds.length>8)fail('所选历史超过单段读取上限，已保留进度，需调整整理范围。');
+      if((chosen.strategy!=='direct-summary'&&chosen.topicIds.length>24)||chosen.roundIds.length>8)fail('所选历史超过单段读取上限，已保留进度，需调整整理范围。');
       const selected=new Set(chosen.topicIds),requested=new Set(chosen.roundIds);
       const oldRounds=full.rounds.slice(0,offset);
       if([...requested].some(id=>!oldRounds.some(r=>r.roundId===id)))fail('不能读取当前段或未来轮次作为历史。');
@@ -147,7 +150,7 @@
   function makeInput(full, rounds, result) {
     const ids = new Set(rounds.map(r => r.roundId));
     return { ...full, rounds, previousResult: null, manualAnnotations: full.manualAnnotations.filter(a => ids.has(a.roundId)),
-      context: context(result), newTopicPrefix: 'n' + (result.timeline.length + 1) + '_' };
+      context: D.memory(result,context(result)), newTopicPrefix: 'n' + (result.timeline.length + 1) + '_' };
   }
   function next(full, offset, result, profile, systemPrompt, maxRounds) {
     const ceiling = Math.max(1, Math.min(maxRounds || profile.batchRounds, profile.batchRounds, Math.floor(profile.maxTokens / 1000) || 1));
@@ -180,6 +183,17 @@
     result.topics.sort((a,b)=>order.get(a.roundIds[0])-order.get(b.roundIds[0]));
     const relationKeys = new Set();
     result.relations = result.relations.filter(e => { const key=JSON.stringify([e.from,e.to,e.type,e.atRoundId]); if(relationKeys.has(key))return false;relationKeys.add(key);return true; });
+    result.directions=result.directions||[];
+    for(const d of delta.directions||[]){
+      const item={...d,parentTopicId:remap(d.parentTopicId),expandedTopicId:d.expandedTopicId?remap(d.expandedTopicId):null};
+      const existing=result.directions.find(p=>D.identity(p)===D.identity(item));
+      if(existing)continue;
+      const id='d_'+A.hash(D.identity(item));item.id=id;
+      if(result.directions.some(p=>p.id===id))item.id=id+'_'+result.directions.length;
+      result.directions.push(item);
+    }
+    for(const update of delta.directionUpdates||[]){const old=result.directions.find(d=>d.id===update.id);if(old)Object.assign(old,{discussionStatus:'expanded',expandedTopicId:remap(update.expandedTopicId),resolvedAtRoundId:update.resolvedAtRoundId,resolutionEvidence:update.evidence});}
+    result.directionUpdates=[];
     result.warnings = [...new Set([...result.warnings,...delta.warnings])].slice(0,1000);
     return result;
   }

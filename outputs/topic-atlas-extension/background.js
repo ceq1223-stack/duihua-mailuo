@@ -1,4 +1,4 @@
-importScripts('core.js', 'reader.js', 'prompt.js', 'ai.js', 'batch.js','fragments.js', 'trust.js','ui-events.js','views.js', 'api-worker.js', 'library.js', 'queue.js');
+importScripts('core.js', 'reader.js', 'prompt.js','directions.js', 'ai.js', 'batch.js','fragments.js', 'trust.js','ui-events.js','views.js', 'api-worker.js', 'library.js', 'queue.js');
 // Deny content scripts access to stored API credentials and private archives.
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -19,7 +19,7 @@ function sameCapture(old,next){
   return JSON.stringify([old.source,old.branches,old.activeNode,(old.messages||[]).map(m=>m.id)])===JSON.stringify([next.source,next.branches,next.activeNode,(next.messages||[]).map(m=>m.id)]);
 }
 function sameView(before,after){
-  if(!sameCapture(before,after)||JSON.stringify(before?.annotations)!==JSON.stringify(after.annotations))return false;
+  if(!sameCapture(before,after)||JSON.stringify(before?.annotations)!==JSON.stringify(after.annotations)||JSON.stringify(before?.directionTasks)!==JSON.stringify(after.directionTasks))return false;
   const entries=r=>[Object.entries(r.aiResults||{}).map(([branch,e])=>[branch,e.result,e.generatedAt,e.model,e.provider]),(r.aiHistory||[]).filter(h=>h.complete).map(h=>[h.branchId,h.entry?.result,h.entry?.generatedAt,h.entry?.model,h.entry?.provider])];
   return JSON.stringify(entries(before))===JSON.stringify(entries(after));
 }
@@ -80,6 +80,21 @@ async function receive(message, sender) {
     await chrome.storage.local.set({ [key]: record });
     return { ok: true };
   }
+  if(message.type==='direction-set'){
+    if(!AtlasTrust.isUI(sender))throw new Error('只能从扩展界面调整路径待办。');
+    const key=keyFor(message.key),record=(await chrome.storage.local.get(key))[key],branch=message.branchId||'current';
+    if(!record)throw new Error('本地记录不存在。');
+    const result=AtlasAI.displayAnalysis(record,branch)?.result,d=result?.directions?.find(d=>d.id===message.id);
+    if(!d||AtlasDirections.identity(d)!==message.identity||d.discussionStatus==='expanded')throw new Error('路径结果已更新，请重新选择该端点。');
+    const source=AtlasAI.pathRecord(record,branch).messages;
+    if(!d.evidence.every(e=>source.some(m=>m.id===e.messageId&&m.role===e.role&&m.text.includes(e.quote))))throw new Error('路径来源已变更，请先等待新图完成。');
+    const states=record.directionTasks?.[branch]||{},identity=AtlasDirections.identity(d),stored=states[identity]?.status,previous=Object.hasOwn(AtlasDirections.transitions,stored)?stored:'pending';
+    if(!AtlasDirections.transitions[previous]?.includes(message.status))throw new Error('待办状态已改变，请刷新后重试。');
+    record.directionTasks={...record.directionTasks,[branch]:{...states,[identity]:{status:message.status,updatedAt:new Date().toISOString()}}};
+    await chrome.storage.local.set({[key]:record});
+    if(typeof AtlasViews!=='undefined')await AtlasViews.publish(record);
+    return {ok:true};
+  }
   if (message.type === 'annotate') {
     if (!AtlasTrust.isUI(sender)) throw new Error('只能从扩展界面修改主题。');
     const key = keyFor(message.key), record = (await chrome.storage.local.get(key))[key];
@@ -114,7 +129,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     storageReady.then(() => AtlasAPI.receive(message, sender, enqueue)).then(reply, error => reply({ error: error.message || 'API 操作失败。' }));
     return true;
   }
-  if (!['read-structured', 'diagnose-message-markers', 'capture', 'annotate', 'delete', 'get-auto-settings'].includes(message?.type)) return;
+  if (!['read-structured', 'diagnose-message-markers', 'capture', 'annotate','direction-set', 'delete', 'get-auto-settings'].includes(message?.type)) return;
   const task = enqueue(() => receive(message, sender));
   task.then(reply, error => reply({ error: error.message || '保存失败，可能已超出本机存储配额。请先导出备份。' }));
   return true;

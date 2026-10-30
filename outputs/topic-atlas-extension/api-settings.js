@@ -10,6 +10,7 @@ function fillProfile(id) {
   $('providerInput').value = id; $('baseUrlInput').value = p.baseUrl;
   $('baseUrlInput').readOnly = id !== 'custom';
   $('modelInput').value = p.model; $('maxTokensInput').value = p.maxTokens;
+  $('requestTimeoutInput').value=p.requestTimeoutSeconds??600;
   $('inputBudgetInput').value = p.inputBudget ?? 12000; $('batchRoundsInput').value = p.batchRounds ?? 6; $('reuseResultsInput').checked = p.reuseResults !== false;
   $('jsonModeInput').checked = p.jsonMode; $('rememberKeyInput').checked = p.rememberKey;
   $('apiKeyInput').value = ''; $('modelNames').innerHTML = '';
@@ -19,17 +20,15 @@ function fillProfile(id) {
 }
 $('providerInput').onchange = () => {capabilityOptions={};fillProfile($('providerInput').value);};
 function fillCapability(c){
-  $('contextWindowInput').value=c?.contextWindow||'';$('modelMaxOutputInput').value=c?.maxOutput||'';$('modelMaxInputInput').value=c?.maxInput||'';
-  $('capabilitySourceInput').value=c?.source||'';$('capabilityConfirmed').checked=!!c?.confirmed;
-  $('capabilityStatus').textContent=c?'已记录此服务和模型的能力依据；保存后用于每次请求规划。':'尚未核对模型能力；可以保存 Key 和测试连接，但归纳请求将暂停。';
+  $('capabilityStatus').textContent=c?`已获得当前模型的能力信息：上下文 ${c.contextWindow}，最大输出 ${c.maxOutput}。无需手动填写。`:'无需填写上下文容量。接口未提供能力信息时，按当前输入预算处理；遇到实际超限会尝试缩小或分段。';
 }
-$('modelInput').oninput=()=>{const c=capabilityOptions[$('modelInput').value];fillCapability(c||null);};
+function selectedCapability(provider,baseUrl,model){const c=capabilityOptions[model]||aiConfig?.profiles[provider]?.capability;return c?.baseUrl===baseUrl&&c?.model===model?c:null;}
+$('modelInput').oninput=()=>{try{const p=$('providerInput').value,url=AtlasAI.endpoint(p==='custom'?$('baseUrlInput').value:AtlasAI.presets[p].baseUrl).baseUrl;fillCapability(selectedCapability(p,url,$('modelInput').value.trim()));}catch{fillCapability(null);}};
 $('baseUrlInput').oninput=()=>{capabilityOptions={};fillCapability(null);};
 function formConfig() {
   const provider=$('providerInput').value,baseUrl=AtlasAI.endpoint(provider==='custom'?$('baseUrlInput').value:AtlasAI.presets[provider].baseUrl).baseUrl,model=$('modelInput').value.trim();
-  const c={baseUrl,model,contextWindow:Number($('contextWindowInput').value),maxOutput:Number($('modelMaxOutputInput').value),maxInput:$('modelMaxInputInput').value?Number($('modelMaxInputInput').value):null,source:$('capabilitySourceInput').value.trim(),confirmed:$('capabilityConfirmed').checked,method:'manual',checkedAt:new Date().toISOString()};
-  const config=AtlasAI.config({ provider,baseUrl,model,capability:c,maxTokens: $('maxTokensInput').value, inputBudget:$('inputBudgetInput').value, batchRounds:$('batchRoundsInput').value, reuseResults:$('reuseResultsInput').checked, jsonMode: $('jsonModeInput').checked, rememberKey: $('rememberKeyInput').checked });
-  if(c.confirmed&&!config.capability)throw new Error('模型能力字段不完整或不合法，请核对上下文、最大输出和依据。');
+  const c=selectedCapability(provider,baseUrl,model);
+  const config=AtlasAI.config({ provider,baseUrl,model,capability:c,maxTokens: $('maxTokensInput').value, inputBudget:$('inputBudgetInput').value, batchRounds:$('batchRoundsInput').value, requestTimeoutSeconds:$('requestTimeoutInput').value,reuseResults:$('reuseResultsInput').checked, jsonMode: $('jsonModeInput').checked, rememberKey: $('rememberKeyInput').checked });
   return config;
 }
 async function saveAPI(clearKey = false) {
@@ -38,7 +37,7 @@ async function saveAPI(clearKey = false) {
   await request({ type: 'ai-save-config', config, apiKey: $('apiKeyInput').value, clearKey });
   await refreshConfig(); $('apiKeyInput').value = '';
   $('keyHint').textContent = aiConfig.profiles[config.provider].hasKey ? 'Key 已保存；留空继续使用。' : '尚未保存 Key。';
-  $('capabilityStatus').textContent=config.capability?`能力已绑定 ${config.model}，上下文 ${config.capability.contextWindow}，模型最大输出 ${config.capability.maxOutput}；每次请求还会预留输出和安全空间。`:'能力尚未核对，正式整理请求不会发送。';
+  fillCapability(config.capability);
 }
 $('apiForm').onsubmit = async event => {
   event.preventDefault();

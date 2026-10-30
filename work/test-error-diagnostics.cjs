@@ -7,7 +7,7 @@ const B=require('../outputs/topic-atlas-extension/batch.js'),AI=require('../outp
 const config={provider:'openai',model:'fixture',rememberKey:true,reuseResults:true,inputBudget:12000,batchRounds:6};
 const raw=(finish,content='{}',extra={})=>new Response(JSON.stringify({choices:[{finish_reason:finish,message:{content,...extra}}]}));
 let passed=0;const pass=s=>{passed++;console.log('PASS',s);};
-async function seed(profile=config){const r=makeRecord(2),h=harness(r);await h.send({type:'ai-save-config',config:profile,apiKey:'FIXTURE_DIAGNOSTIC_KEY'});const initial=await h.send({type:'ai-extract',key:r.key});assert(initial.ok,initial.error);const old=h.state['conversation:'+r.key],next=makeRecord(3);Object.assign(old,{messages:next.messages,allMessages:next.allMessages,branches:next.branches});return {...h,key:r.key};}
+async function seed(profile=config){const r=makeRecord(2),h=harness(r);await h.send({type:'ai-save-config',config:profile,apiKey:'FIXTURE_DIAGNOSTIC_KEY'});const initial=await h.send({type:'ai-extract',key:r.key});assert(initial.ok,initial.error);const old=h.state['conversation:'+r.key],next=makeRecord(3);Object.assign(old,{messages:next.messages,allMessages:next.allMessages,branches:next.branches});require('./history-fixture.cjs').oversizeHistory(h,r.key);return {...h,key:r.key};}
 async function run(){
  const cases=[
   ['length','{}',{},'输出达到长度上限','12000'],

@@ -5,8 +5,8 @@ const fixtureProfile=require('./capability-fixture.cjs'),memory=require('./fragm
 const config={provider:'openai',model:'fixture',rememberKey:true,inputBudget:12000,batchRounds:6};
 let n=0;const pass=s=>{n++;console.log('PASS',s);};
 async function run(){
- const record=makeRecord(1),unknown=harness(record);await unknown.send({type:'ai-save-config',config:{...config,capability:{}},apiKey:'FIXTURE_KEY'});let result=await unknown.send({type:'ai-extract',key:record.key});assert(result.error.includes('尚未核对'));assert.equal(unknown.calls.length+unknown.historyCalls.length+unknown.fragmentCalls.length,0);
- pass('Unknown model capability blocks paid organization requests instead of treating user budget as capacity');
+ const record=makeRecord(1),unknown=harness(record);await unknown.send({type:'ai-save-config',config:{...config,capability:{}},apiKey:'FIXTURE_KEY'});let result=await unknown.send({type:'ai-extract',key:record.key});assert(result.ok,result.error);assert(unknown.calls.length>0);assert.equal(unknown.state['atlas:ai'].profiles.openai.capability,null);
+ pass('Unknown model capability allows extraction without inventing model context limits');
  const raw=fixtureProfile({...config,maxTokens:12000,inputBudget:128000});raw.capability.contextWindow=32768;raw.capability.maxOutput=2048;
  const bounded=AI.effectiveProfile(raw);assert.equal(bounded.maxTokens,2048);assert(bounded.inputBudget<32768-2048);assert.equal(bounded.capability.contextWindow,32768);
  pass('Effective input and output allowances are clamped by model capability and reserved headroom');
@@ -51,10 +51,10 @@ async function run(){
  pass('Readback cannot escape the current round snapshot or silently accept an invalid source range');
  const changed=structuredClone(doc);changed.text='修改后的原文。'+doc.text;const starts=[];const changedReader=F.runner({profile:p,cache,identity:'test',checkpoint:async()=>{},request:async(s,input)=>{starts.push(input.range.start);return memory(input);}});await changedReader.read(changed,'检查前后决定及否定变化',240);assert.equal(starts[0],0);
  pass('Editing source content invalidates partial memory instead of mixing old and new text');
- const settings=page('settings');await flush();const nodes=settings.nodes;for(const id of ['contextWindowInput','modelMaxOutputInput','capabilitySourceInput','capabilityConfirmed'])assert(nodes.has(id));nodes.get('contextWindowInput').value='64000';nodes.get('modelMaxOutputInput').value='8000';nodes.get('capabilitySourceInput').value='服务商文档，已人工核对';nodes.get('capabilityConfirmed').checked=true;await nodes.get('apiForm').onsubmit({preventDefault(){}});const saved=settings.calls.filter(m=>m.type==='ai-save-config').at(-1).config;assert.equal(saved.capability.contextWindow,64000);assert.equal(saved.capability.model,saved.model);
- pass('Settings save capability evidence bound to the selected model and endpoint');
- nodes.get('modelInput').value='different-model';nodes.get('modelInput').oninput();assert.equal(nodes.get('capabilityConfirmed').checked,false);assert.equal(nodes.get('contextWindowInput').value,'');
- pass('Editing the model clears the previous capability confirmation');
+ const settings=page('settings');await flush();const nodes=settings.nodes;for(const id of ['contextWindowInput','modelMaxOutputInput','capabilitySourceInput','capabilityConfirmed'])assert(!nodes.has(id));await nodes.get('apiForm').onsubmit({preventDefault(){}});const saved=settings.calls.filter(m=>m.type==='ai-save-config').at(-1).config;assert.equal(saved.capability,null);assert(nodes.get('capabilityStatus').textContent.includes('无需填写'));
+ pass('Settings save usable API configuration without manual model-capacity fields');
+ nodes.get('modelInput').value='different-model';nodes.get('modelInput').oninput();await nodes.get('apiForm').onsubmit({preventDefault(){}});assert.equal(settings.calls.filter(m=>m.type==='ai-save-config').at(-1).config.capability,null);
+ pass('Editing the model never carries over another models capability');
  let fixedCalls=0;const fixed=F.runner({profile:p,cache:{},request:async()=>{fixedCalls++;},checkpoint:async()=>{}});await assert.rejects(fixed.compact({rounds:[]},'过长固定提示词'.repeat(2000)),e=>e.code==='REQUEST_FIXED_OVERHEAD');assert.equal(fixedCalls,0);
  pass('Fixed prompt overflow is detected before any paid fragment request');
  let rejects=0,firstSuccess=false;const narrowed=F.runner({profile:p,cache:{},checkpoint:async()=>{},request:async(s,input)=>{if(input.text.length>300){assert(!firstSuccess);rejects++;throw Object.assign(new Error('declared capacity differs'),{code:'CONTEXT_LIMIT'});}firstSuccess=true;return memory(input);}});await narrowed.read({...doc,text:doc.text.slice(0,2400)},'更小的真实限制',240);assert(rejects>0&&rejects<=8);

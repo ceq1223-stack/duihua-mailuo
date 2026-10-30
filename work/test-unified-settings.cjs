@@ -29,10 +29,10 @@ function page(name){
    if(m.type==='queue-start'){tasks=[{id:'new-task',key:m.key,branchId:m.branchId,state:'queued',createdAt:'2026-10-18T08:00:00Z',processed:0,total:2}];return {ok:true,total:2};}
    return {ok:true};
   }},storage:{local:{get:async k=>k===null?structuredClone(memory):{[k]:memory[k]},set:async v=>Object.assign(memory,v)},onChanged:{addListener:f=>(events.storageChanged||=[]).push(f)}},tabs:{query:async()=>[{id:1,url:record.url}],sendMessage:async()=>({running:true,source:{type:'chatgpt-api'}}),onActivated:{addListener(){}},onUpdated:{addListener(){}}}}});
- for(const name of ['core.js','prompt.js','ai.js'])vm.runInContext(fs.readFileSync(dir+name,'utf8'),c,{filename:name});
+ for(const name of ['core.js','prompt.js','directions.js','ai.js'])vm.runInContext(fs.readFileSync(dir+name,'utf8'),c,{filename:name});
  profiles=vm.runInContext("Object.fromEntries(Object.entries(AtlasAI.presets).map(([id,p])=>[id,AtlasAI.config({provider:id,baseUrl:id==='custom'?'https://fixture.example/v1':p.baseUrl,model:'fixture-model'})]))",c);
  for(const p of Object.values(profiles))p.hasKey=true;
- for(const [,file] of html.matchAll(/<script src="([^"]+)"><\/script>/g))if(!['core.js','prompt.js','ai.js'].includes(file))vm.runInContext(fs.readFileSync(dir+file,'utf8'),c,{filename:file});
+ for(const [,file] of html.matchAll(/<script src="([^"]+)"><\/script>/g))if(!['core.js','prompt.js','directions.js','ai.js'].includes(file))vm.runInContext(fs.readFileSync(dir+file,'utf8'),c,{filename:file});
  return {html,nodes,c,calls,permissions,events,record,memory,setTasks:v=>tasks=v,setGrant:v=>grant=v,profile:id=>profiles[id],opened:()=>opened};
 }
 async function run(){

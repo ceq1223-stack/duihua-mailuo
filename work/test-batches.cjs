@@ -19,7 +19,7 @@ function modelOutput(input) {
   if(previous && previous!==topic.id)relations.push({from:previous,to:topic.id,type:seen?'return':'branch',atRoundId:r.roundId,label:seen?'回归主题':'探索分支',reason:'根据本轮用户的明确讨论方向。',inferred:false,evidence});
   previous=topic.id;
  }
- return {schemaVersion:'1.0',branchId:input.branchId,topics,timeline,relations,warnings:[]};
+ return {schemaVersion:'1.0',branchId:input.branchId,topics,timeline,relations,directions:[],directionUpdates:[],warnings:[]};
 }
 function harness(record){
  const state={['conversation:'+record.key]:clone(record)},session={},listeners=[],changes=[],calls=[],historyCalls=[],briefCalls=[],fragmentCalls=[];
@@ -33,7 +33,7 @@ function harness(record){
 }
 let passed=0;function pass(s){passed++;console.log('PASS',s)}
 async function run(){
- const record=makeRecord(35,'正文'.repeat(150)),input=AI.prepare(record).input,profile=AI.config({provider:'openai',model:'mock',inputBudget:7000,batchRounds:6}),system=P.default+P.contract+P.batchContract;
+ const record=makeRecord(35,'正文'.repeat(150)),input=AI.prepare(record).input,profile=AI.config({provider:'openai',model:'mock',inputBudget:9000,batchRounds:6}),system=P.default+P.contract+P.batchContract;
  let result=B.empty('current'),offset=0,steps=0;
  while(offset<input.rounds.length){const batch=B.next(input,offset,result,profile,system);assert(batch.estimatedTokens<=profile.inputBudget);assert(batch.input.rounds.length<=6);assert.equal(batch.input.previousResult,null);assert(batch.input.context.topics.length<=24);assert(batch.input.rounds[0].messages[0].text.length>300);const delta=AI.validate(modelOutput(batch.input),batch.input);result=B.merge(result,delta,input.rounds);offset+=batch.input.rounds.length;steps++}
  result=AI.validate(result,input);assert.equal(result.timeline.length,35);assert.equal(result.topics.length,2);assert(steps>1);assert(result.relations.some(e=>e.type==='return'));pass('Budgeted complete-round chunks merge into one graph with cross-chunk returns');

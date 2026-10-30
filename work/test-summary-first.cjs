@@ -4,7 +4,7 @@ const B=require('../outputs/topic-atlas-extension/batch.js');
 const {response,selection}=require('./history-fixture.cjs');
 const config={provider:'openai',model:'fixture',rememberKey:true,reuseResults:true,inputBudget:12000,batchRounds:6};
 let passed=0;const pass=s=>{passed++;console.log('PASS',s);};
-async function seed(){const r=makeRecord(2),h=harness(r);await h.send({type:'ai-save-config',config,apiKey:'FIXTURE_SUMMARY_KEY'});const initial=await h.send({type:'ai-extract',key:r.key});assert(initial.ok,initial.error);const record=h.state['conversation:'+r.key],next=makeRecord(3);Object.assign(record,{messages:next.messages,allMessages:next.allMessages,branches:next.branches});return {...h,key:r.key};}
+async function seed(){const r=makeRecord(2),h=harness(r);await h.send({type:'ai-save-config',config,apiKey:'FIXTURE_SUMMARY_KEY'});const initial=await h.send({type:'ai-extract',key:r.key});assert(initial.ok,initial.error);const record=h.state['conversation:'+r.key],next=makeRecord(3);Object.assign(record,{messages:next.messages,allMessages:next.allMessages,branches:next.branches});require('./history-fixture.cjs').oversizeHistory(h,r.key);return {...h,key:r.key};}
 const extract=h=>h.send({type:'ai-extract',key:h.key});
 async function run(){
  const catalog=B.history.pages({topics:[{id:'t',name:'主题',brief:'范围',summary:'PRIVATE_SUMMARY',roundIds:['old']}]},[],12000);assert(!('sourceRoundIds' in catalog[0].topicCatalog[0]));assert(!JSON.stringify(catalog).includes('PRIVATE_SUMMARY'));assert(B.history.selectionPrompt.includes('roundIds必须为空数组'));pass('Directory stage exposes topic indexes without historical source IDs or detailed summaries');

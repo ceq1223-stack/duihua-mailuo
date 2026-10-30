@@ -9,7 +9,7 @@ record.allMessages=[...record.messages,m('alt','assistant','其他分支的秘�
 record.branches=[{id:'current',label:'网页当前路径',messageIds:record.messages.map(m=>m.id)},{id:'alternate',label:'其他分支 1',messageIds:['u1','alt']}];
 const ev=(id,msg,quote,role='user')=>({roundId:id,messageId:msg,role,quote});
 const valid={schemaVersion:'1.0',branchId:'current',topics:[{id:'t001',name:'主题中心架构',summary:'围绕主题组织对话，并在竞品调查后回归架构。',roundIds:['u1','u3']},{id:'t002',name:'竞品调查',summary:'用户要求调查相似产品。助手建议调查功能和限制。',roundIds:['u2']}],timeline:[{roundId:'u1',primaryTopicId:'t001',secondaryTopicIds:[],title:'讨论主题中心架构',userSummary:'用户要求设计主题中心架构。',assistantSummary:'助手建议按主题组织并保留原消息。',evidence:[ev('u1','u1','先设计主题中心架构')]},{roundId:'u2',primaryTopicId:'t002',secondaryTopicIds:[],title:'转向相似产品调查',userSummary:'用户转向竞品调查。',assistantSummary:'助手建议先调查功能和限制。',evidence:[ev('u2','u2','转向竞品调查，看看相似产品')]},{roundId:'u3',primaryTopicId:'t001',secondaryTopicIds:[],title:'重新完善主题架构',userSummary:'用户回到架构继续完善。',assistantSummary:null,evidence:[ev('u3','u3','回到主题中心架构继续完善')]}],relations:[{from:'t001',to:'t002',type:'branch',atRoundId:'u2',label:'转向竞品',reason:'用户明确转向竞品调查。',inferred:false,evidence:[ev('u2','u2','转向竞品调查')]},{from:'t002',to:'t001',type:'return',atRoundId:'u3',label:'回归架构',reason:'用户明确回到已有架构主题。',inferred:false,evidence:[ev('u3','u3','回到主题中心架构')]}],warnings:[]};
-valid.topics[0].brief='讨论以知识主题组织对话的架构。';valid.topics[1].brief='调查相似产品的功能与限制。';
+valid.topics[0].brief='讨论以知识主题组织对话的架构。';valid.topics[1].brief='调查相似产品的功能与限制。';valid.directions=[];valid.directionUpdates=[];
 let n=0;const pass=name=>{n++;console.log('PASS',name)};
 async function run(){
  const input=AI.prepare(record).input;

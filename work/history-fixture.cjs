@@ -5,4 +5,5 @@ function selection(input) {
 }
 const response=raw=>new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(raw)}}],usage:{prompt_tokens:10,completion_tokens:10,total_tokens:20}}));
 const briefs=input=>({action:'topic_briefs',topics:input.topics.map(t=>({id:t.id,brief:'讨论'+t.name+'的范围与相关问题。'}))});
-module.exports={selection,response,briefs};
+function oversizeHistory(h,key){for(const topic of h.state['conversation:'+key].aiResults.current.result.topics)topic.summary='历史详情。'.repeat(390);}
+module.exports={selection,response,briefs,oversizeHistory};

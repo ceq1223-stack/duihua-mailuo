@@ -1,6 +1,7 @@
 (() => {
   'use strict';
   const A = typeof Atlas !== 'undefined' ? Atlas : require('./core.js');
+  const D=typeof AtlasDirections!=='undefined'?AtlasDirections:require('./directions.js');
   const presets = {
     openai: { name: 'OpenAI（ChatGPT）', baseUrl: 'https://api.openai.com/v1' },
     kimi: { name: 'Kimi（Moonshot）', baseUrl: 'https://api.moonshot.cn/v1' },
@@ -23,6 +24,8 @@
     const maxTokens = Number(raw.maxTokens ?? 12000);
     if (!Number.isInteger(maxTokens) || maxTokens < 512 || maxTokens > 1000000) throw new Error('最大输出长度须为 512—1000000 的整数；实际值还受模型能力约束。');
     const inputBudget = Number(raw.inputBudget ?? 12000), batchRounds = Number(raw.batchRounds ?? 6);
+    const requestTimeoutSeconds=Number(raw.requestTimeoutSeconds??600);
+    if(!Number.isInteger(requestTimeoutSeconds)||requestTimeoutSeconds<60||requestTimeoutSeconds>1800)throw new Error('单次请求等待时间须为 60—1800 秒的整数。');
     if (!Number.isInteger(inputBudget) || inputBudget < 4000 || inputBudget > 4000000) throw new Error('单次输入预算须为 4000—4000000 的整数；实际值还受模型能力约束。');
     if (!Number.isInteger(batchRounds) || batchRounds < 1 || batchRounds > 12) throw new Error('每段轮数须为 1—12 的整数。');
     const c=raw.capability;
@@ -32,15 +35,15 @@
       &&(c.maxInput==null||Number.isInteger(c.maxInput)&&c.maxInput>0)
       &&typeof c.source==='string'&&c.source.trim()&&c.source.length<=500
       ?{baseUrl:ep.baseUrl,model,contextWindow:c.contextWindow,maxOutput:c.maxOutput,maxInput:Number.isInteger(c.maxInput)&&c.maxInput>0?Math.min(c.maxInput,c.contextWindow):null,source:c.source,method:c.method,confirmed:true,checkedAt:typeof c.checkedAt==='string'?c.checkedAt:null}:null;
-    return { provider: raw.provider, baseUrl: ep.baseUrl, model, maxTokens, inputBudget, batchRounds,capability, reuseResults: raw.reuseResults !== false, jsonMode: raw.jsonMode !== false, rememberKey: raw.rememberKey === true };
+    return { provider: raw.provider, baseUrl: ep.baseUrl, model, maxTokens, inputBudget, batchRounds,requestTimeoutSeconds,capability, reuseResults: raw.reuseResults !== false, jsonMode: raw.jsonMode !== false, rememberKey: raw.rememberKey === true };
   }
   function effectiveProfile(raw) {
     const p=config(raw),c=p.capability;
-    if(!c)throw problem('模型能力核对','MODEL_CAPABILITY_UNKNOWN','尚未核对当前服务与模型的上下文及输出上限，未发送整理请求；请在设置中获取能力信息或填写有依据的能力值并确认',{nextStep:'能力必须对应当前 API 地址和模型；小请求连接成功不能证明上下文能力。'});
+    if(!c)return {...p,safety:0,capacity:null,capabilityMode:'unverified'};
     const maxTokens=Math.min(p.maxTokens,c.maxOutput),safety=Math.max(512,Math.ceil(c.contextWindow*.08));
     const capacity=Math.min(c.maxInput||c.contextWindow,c.contextWindow-maxTokens-safety);
     if(capacity<512)throw problem('模型能力核对','MODEL_CAPACITY_FIXED','输出预留与安全余量已占满模型上下文；请调整输出预留或选择能力更大的模型');
-    return {...p,maxTokens,inputBudget:Math.min(p.inputBudget,capacity),safety,capacity};
+    return {...p,maxTokens,inputBudget:Math.min(p.inputBudget,capacity),safety,capacity,capabilityMode:'known'};
   }
   function requestSize(body) {
     const text=JSON.stringify({messages:body.messages,response_format:body.response_format});let upper=256,estimate=200;
@@ -49,10 +52,10 @@
   }
   function checkRequest(profile,body,stage='请求规划') {
     const c=profile.capability;
-    if(!c)throw problem(stage,'MODEL_CAPABILITY_UNKNOWN','模型能力尚未核对，未发送请求');
     const size=requestSize(body),output=body.max_completion_tokens??body.max_tokens??profile.maxTokens;
-    if(output>c.maxOutput||size.estimatedInput>profile.inputBudget||size.upperInput>Math.min(c.maxInput||c.contextWindow,c.contextWindow-output-(profile.safety||Math.max(512,Math.ceil(c.contextWindow*.08)))))
-      throw problem(stage,'REQUEST_BUDGET','完整请求超过已核对的能力或成本预算，需要继续分片',{...size,inputBudget:profile.inputBudget,outputLimit:output,contextWindow:c.contextWindow});
+    const beyondKnown=c&&(output>c.maxOutput||size.upperInput>Math.min(c.maxInput||c.contextWindow,c.contextWindow-output-(profile.safety||Math.max(512,Math.ceil(c.contextWindow*.08)))));
+    if(beyondKnown||size.estimatedInput>profile.inputBudget)
+      throw problem(stage,'REQUEST_BUDGET',beyondKnown?'完整请求超过接口已提供的模型能力，需要继续分片':'完整请求超过当前估算输入预算，需要继续分片',{...size,inputBudget:profile.inputBudget,outputLimit:output,...(c?{contextWindow:c.contextWindow}:{}),capabilityMode:c?'known':'unverified'});
     return size;
   }
   function pathRecord(record, branchId) {
@@ -128,6 +131,7 @@
     return typeof value==='string'&&value.trim().length>0&&Array.from(value.trim()).length<=60&&!/[\r\n\t]/.test(value);
   }
   function nextStep(code) {
+    if(code==='API_TIMEOUT')return '达到插件本地等待上限，不能证明服务没有执行或计费。可在 API 设置延长单次请求等待时间；保存后新建任务可复用兼容进度。重试须手动进行，不会自动重发。';
     if(code==='INPUT_BUDGET'||code==='CONTEXT_LIMIT'||code==='OUTPUT_LIMIT')return '核对输入预算、输出上限及模型限制；修改设置并保存后，点击“抽取关系图”新建任务。';
     if(code==='LIBRARY_PERMISSION_REQUIRED'||code==='LIBRARY_WRITE_FAILED')return '先在资料库设置恢复授权或排除写盘问题并同步；不要仅为保存问题重复调用 AI。';
     if(code==='API_HTTP_401')return '检查并更新 API Key，再手动继续；修改模型或服务地址后应新建任务。';
@@ -252,7 +256,10 @@
     }
     where={phase:options.phase||'结构化结果',field:'warnings'};
     const warnings = array(raw.warnings, '提示', input.context ? 50 : 1000).map(w => string(w, '提示内容', 1000));
-    return { schemaVersion: '1.0', branchId: input.branchId, topics, timeline, relations, warnings: [...new Set([...input.knownGaps, ...warnings])] };
+    where={phase:options.phase||'结构化结果',field:'directions'};
+    if(options.requireDirections&&(!Array.isArray(raw.directions)||!Array.isArray(raw.directionUpdates)))fail('新归纳结果需要 directions 和 directionUpdates 数组，无路径时返回空数组','DIRECTION_FIELDS_REQUIRED',{field:'directions / directionUpdates'});
+    const paths=D.validate(raw,input,{array,string,fail,evidence,resolveRound,topicIds,timeline});
+    return { schemaVersion: '1.0', branchId: input.branchId, topics, timeline, relations,...paths, warnings: [...new Set([...input.knownGaps, ...warnings])] };
   }
   function analysis(record, branchId) {
     if(record?.viewOnly)return record.viewBranch===branchId?record.viewAnalysis:null;

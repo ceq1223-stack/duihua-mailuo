@@ -4,6 +4,7 @@ const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;',
 const launch=typeof location!=='undefined'?new URL(location.href).searchParams:null;
 const standaloneGraph=!!launch?.get('conversation');
 let catalog=[],loadEpoch=0,bodyEpoch=0,bodyContext='',timelineRows=[],timelineAnalysis=null;
+let timelineQuery='',timelineNumbers=new Map();const openRounds=new Set();
 const bodyPages=new Map(),pendingBodies=new Map(),openBodies=new Set(),bodyOffsets=new Map();
 let messageRoundIds=new Map(),messageMetadata=new Map();
 let messageGroups=new Map();
@@ -57,7 +58,7 @@ async function load(followTab = false) {
   }
   if(epoch!==loadEpoch)return;
   const context=JSON.stringify([selectedKey,selectedBranch]);
-  if(bodyContext!==context){bodyEpoch++;bodyPages.clear();pendingBodies.clear();openBodies.clear();bodyOffsets.clear();bodyContext=context;}
+  if(bodyContext!==context){bodyEpoch++;bodyPages.clear();pendingBodies.clear();openBodies.clear();bodyOffsets.clear();bodyContext=context;openRounds.clear();timelineQuery='';$('timelineSearch').value='';}
   const previous=rawRecord();records=record?[record]:[];
   if(previous?.renderRevision&&record?.renderRevision===previous.renderRevision){renderProgress();return;}
   render();setView(view);
@@ -65,14 +66,14 @@ async function load(followTab = false) {
 const timelineWindow=AtlasTimeline.create($('timeline'),{
   renderRow:rowHTML,
   onUnmount(ids){const removed=new Set(ids);for(const cache of [bodyPages,pendingBodies])for(const key of cache.keys())if(removed.has(messageRoundIds.get(JSON.parse(key)[1])))cache.delete(key);},
-  onMount(){for(const details of $('timeline').querySelectorAll?.('details[data-body]')||[])if(openBodies.has(details.dataset.body)&&!details.open){details.open=true;loadBodyPage(details,bodyOffsets.get(details.dataset.body)||0);}}
+  onMount(){for(const shell of $('timeline').querySelectorAll?.('details[data-round-shell]')||[])if(openRounds.has(shell.dataset.roundShell))shell.open=true;for(const details of $('timeline').querySelectorAll?.('details[data-body]')||[])if(openBodies.has(details.dataset.body)&&!details.open){details.open=true;loadBodyPage(details,bodyOffsets.get(details.dataset.body)||0);}}
 });
 function rowHTML(t,i){
-  const record=current(),result=timelineAnalysis;
+  i=timelineNumbers.get(t.id)??i;const record=current(),result=timelineAnalysis;
   const a=record.annotations?.[t.id]||{},row=result?.timeline.find(row=>row.roundId===t.id),topic=result?.topics.find(n=>n.id===row?.primaryTopicId);
   const title=row?.title||a.topic||'待命名标题 '+(i+1),createdAt=(t.user||t.assistants[0]||t.unknowns?.[0])?.createdAt;
   const time=createdAt&&!Number.isNaN(Date.parse(createdAt))?new Date(createdAt).toLocaleString('zh-CN'):'';
-  return `<article class="turn${timelineSelection?.key===selectedKey&&timelineSelection.branchId===selectedBranch&&timelineSelection.turnIds.includes(t.id)?' target':''}" id="turn-${i}" data-turn-id="${esc(t.id)}" data-window-index="${i}" aria-posinset="${i+1}" aria-setsize="-1"><span class="number">${i+1}</span><div class="heading"><div>${topic?`<span class="topic-tag">${esc(topic.name)}</span>`:''}<b class="${row||a.topic?'':'draft'}">${esc(title)}</b>${time?`<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>`:''}${a.summary?`<p class="summary-text">${esc(a.summary)}</p>`:''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i+1} 轮主题">编辑</button></div>${t.unknowns?t.unknowns.map(m=>messageHTML(m)).join(''):t.user?messageHTML(t.user,row?.userSummary):'<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns?'':t.assistants.length?t.assistants.map(m=>messageHTML(m,row?.assistantSummary)).join(''):'<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</article>`;
+  return `<article class="turn${timelineSelection?.key===selectedKey&&timelineSelection.branchId===selectedBranch&&timelineSelection.turnIds.includes(t.id)?' target':''}" id="turn-${i}" data-turn-id="${esc(t.id)}" data-window-index="${i}" aria-posinset="${i+1}" aria-setsize="-1"><span class="number">${i+1}</span><details class="round-shell" data-round-shell="${esc(t.id)}"${openRounds.has(t.id)?' open':''}><summary class="heading"><div>${topic?`<span class="topic-tag">${esc(topic.name)}</span>`:''}<b class="${row||a.topic?'':'draft'}">${esc(title)}</b>${time?`<time class="time-label" datetime="${esc(createdAt)}">${esc(time)}</time>`:''}${a.summary?`<p class="summary-text">${esc(a.summary)}</p>`:''}</div><button class="edit" data-edit="${esc(t.id)}" aria-label="编辑第 ${i+1} 轮主题">编辑</button><span class="round-toggle" aria-hidden="true">＋</span></summary><div class="round-messages">${t.unknowns?t.unknowns.map(m=>messageHTML(m)).join(''):t.user?messageHTML(t.user,row?.userSummary):'<div class="message"><span class="role">You</span><p class="missing">当前采集片段缺少用户消息</p></div>'}${t.unknowns?'':t.assistants.length?t.assistants.map(m=>messageHTML(m,row?.assistantSummary)).join(''):'<div class="message ai"><span class="role">AI</span><p class="missing">尚未采集到回复</p></div>'}</div></details></article>`;
 }
 async function loadBodyPage(details,offset){
   const id=details.dataset.body,message=messageGroups.get(id),record=current();if(!message||!record||!details.open)return;
@@ -96,14 +97,16 @@ async function loadBodyPage(details,offset){
   }catch(error){if(epoch===bodyEpoch)target.textContent=error.message;}
 }
 $('timeline').addEventListener('toggle',event=>{
-  const details=event.target;if(!details.matches?.('details[data-body]'))return;
+  const details=event.target;
+  if(details.matches?.('details[data-round-shell]')){if(details.open)openRounds.add(details.dataset.roundShell);else openRounds.delete(details.dataset.roundShell);timelineWindow.measure();return;}
+  if(!details.matches?.('details[data-body]'))return;
   if(details.open){openBodies.add(details.dataset.body);loadBodyPage(details,bodyOffsets.get(details.dataset.body)||0);}
   else{openBodies.delete(details.dataset.body);bodyOffsets.delete(details.dataset.body);bodyPages.clear();details.querySelector('.full').textContent='';details.querySelector('.body-pages').innerHTML='';timelineWindow.measure();}
 },true);
 document.addEventListener('scroll',()=>timelineWindow.scroll(),{passive:true});
 if(typeof globalThis.addEventListener==='function')globalThis.addEventListener('resize',()=>timelineWindow.scroll(),{passive:true});
 function setView(next) {
-  view = next;timelineWindow.activate(view==='timeline'); $('timeline').hidden = view !== 'timeline'; $('graph').hidden = view !== 'graph';
+  view = next;$('timelineToolbar').hidden=view!=='timeline';timelineWindow.activate(view==='timeline'); $('timeline').hidden = view !== 'timeline'; $('graph').hidden = view !== 'graph';
   $('timelineTab').setAttribute('aria-selected', view === 'timeline'); $('graphTab').setAttribute('aria-selected', view === 'graph');
   if(view==='graph'){if(current())renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);if(!graphUI.viewport)fitGraph();else graphTransform();}
 }
@@ -132,9 +135,20 @@ function render() {
   for(const t of timelineRows)for(const m of [t.user,...t.assistants,...(t.unknowns||[])].filter(Boolean))messageRoundIds.set(m.id,t.id);
   messageGroups=new Map(timelineRows.flatMap(t=>[t.user,...t.assistants,...(t.unknowns||[])].filter(Boolean)).map(m=>[m.id,m]));
   timelineWindow.activate(view==='timeline');
-  timelineWindow.set(timelineRows,JSON.stringify([selectedKey,selectedBranch]));
+  timelineNumbers=new Map(timelineRows.map((t,i)=>[t.id,i]));applyTimelineFilter();
   if(view==='graph')renderGraph(record,result);
 }
+function applyTimelineFilter(){
+  const q=timelineQuery.trim().toLowerCase(),record=current();
+  const rows=q?timelineRows.filter(t=>{
+    const row=timelineAnalysis?.timeline.find(r=>r.roundId===t.id),topic=timelineAnalysis?.topics.find(n=>n.id===row?.primaryTopicId),a=record?.annotations?.[t.id];
+    return [row?.title,topic?.name,row?.userSummary,row?.assistantSummary,a?.topic,a?.summary,...[t.user,...t.assistants,...(t.unknowns||[])].filter(Boolean).map(m=>m.text)].filter(Boolean).join(' ').toLowerCase().includes(q);
+  }):timelineRows;
+  timelineWindow.set(rows,JSON.stringify([selectedKey,selectedBranch,timelineQuery]));$('timelineCount').textContent=q?rows.length+' / '+timelineRows.length+' 轮':'按轮次排列';
+}
+$('timelineSearch').addEventListener('input',event=>{if(event.isComposing)return;timelineQuery=event.target.value;applyTimelineFilter();});
+$('timelineSearch').addEventListener('compositionend',event=>{timelineQuery=event.target.value;applyTimelineFilter();});
+$('timelineReset').onclick=()=>{timelineQuery='';$('timelineSearch').value='';applyTimelineFilter();};
 function renderProgress() {
   const state=AtlasPanelState.describe(rawRecord(),selectedBranch,queueTasks);
   const time=state.time&&!Number.isNaN(Date.parse(state.time))?` · ${state.timeLabel} ${new Date(state.time).toLocaleString('zh-CN')}`:'';
@@ -149,7 +163,9 @@ function renderGraph(record,result) {
   graphModel=AtlasGraphView.model(record,result,Atlas);
   if(!graphModel.nodes.length){delete host.dataset.publication;delete host.dataset.context;host.innerHTML='<p class="empty">暂无可读主题。</p>';return;}
   if(!graphModel.byId.has(graphUI.selected)){graphUI.selected=null;graphUI.edge=null;}
-  const html=AtlasGraphView.render(graphModel,graphUI,selectedKey,selectedBranch),identity=JSON.stringify([context,record.revision||Atlas.hash(html),graphUI.selected,graphUI.edge,graphUI.query,graphUI.returns]);
+  if(!graphModel.frontiers.nodes.some(d=>d.id===graphUI.frontier))graphUI.frontier=null;
+  graphUI.tasks=record.directionTasks?.[selectedBranch]||{};
+  const html=AtlasGraphView.render(graphModel,graphUI,selectedKey,selectedBranch),identity=JSON.stringify([context,record.revision||Atlas.hash(html),graphUI.selected,graphUI.edge,graphUI.query,graphUI.returns,graphUI.frontier]);
   if(host.dataset.publication===identity)return;
   const scroll=document.scrollingElement,top=scroll?.scrollTop;
   const search=host.querySelector?.('[data-graph-search]'),searchFocused=search&&document.activeElement===search,caret=search?.selectionStart;
@@ -168,7 +184,7 @@ function graphAction(action){
   if(action==='fit')return fitGraph();
   if(action==='in'||action==='out')return zoomGraph(action==='in'?1.25:.8);
   if(action==='canvas')return $('graph').querySelector?.('.graph-stage')?.scrollIntoView?.({behavior:'smooth',block:'center'});
-  graphUI.selected=null;graphUI.edge=null;topicSelection=null;
+  graphUI.selected=null;graphUI.edge=null;graphUI.frontier=null;topicSelection=null;
   if(action==='reset'){graphUI.query='';graphUI.returns=false;}
   renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
   if(action==='reset')fitGraph();
@@ -225,17 +241,31 @@ async function locate(id) {
 }
 function locateTopic(id) {
   if(!current()||!graphModel?.byId.has(id))return;
-  graphUI.selected=id;graphUI.edge=null;
+  graphUI.selected=id;graphUI.edge=null;graphUI.frontier=null;
   topicSelection={key:selectedKey,branchId:selectedBranch,topicId:id,turnIds:graphModel.byId.get(id).turnIds};
   renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
   $('graph').querySelector?.('.graph-detail')?.scrollIntoView?.({behavior:'smooth',block:'nearest'});
 }
+function selectFrontier(id){
+  const d=graphModel?.frontiers.nodes.find(d=>d.id===id);if(!d)return;
+  graphUI.frontier=id;graphUI.selected=d.parentTopicId;graphUI.edge=null;
+  renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);
+  const box=$('graph').querySelector?.('.graph-stage')?.getBoundingClientRect?.(),p=graphModel.frontiers.ends.get(id);
+  if(box&&p){graphUI.scale=Math.max(.8,graphUI.scale);graphUI.x=box.width/2-(p.x+p.width/2)*graphUI.scale;graphUI.y=box.height/2-(p.y+p.height/2)*graphUI.scale;graphUI.viewport=true;graphTransform();}
+}
+async function setDirectionTask(id,next){
+  const record=current(),d=graphModel?.frontiers.nodes.find(d=>d.id===id);if(!record||!d)return;
+  const buttonKey=selectedKey,branch=selectedBranch;
+  await request({type:'direction-set',key:buttonKey,branchId:branch,id,identity:AtlasDirections.identity(d),status:next});
+  if(buttonKey===selectedKey&&branch===selectedBranch)await load();
+}
 function highlightTurns(turnIds) {
+  timelineQuery='';$('timelineSearch').value='';for(const id of turnIds)openRounds.add(id);applyTimelineFilter();
   timelineSelection={key:selectedKey,branchId:selectedBranch,turnIds:[...turnIds]};
   setView('timeline');timelineWindow.reveal(turnIds[0]);
   const matches=[...document.querySelectorAll('.turn')].filter(n=>turnIds.includes(n.dataset.turnId));
   document.querySelectorAll('.target').forEach(n=>n.classList.remove('target'));
-  matches.forEach(n=>n.classList.add('target'));setView('timeline');
+  matches.forEach(n=>{n.classList.add('target');const shell=n.querySelector?.('details[data-round-shell]');if(shell)shell.open=true;});setView('timeline');
   matches[0]?.scrollIntoView({behavior:'smooth',block:'center'});
 }
 $('automatic').onchange = async () => {
@@ -271,12 +301,15 @@ $('editForm').onsubmit = async event => {
 };
 document.addEventListener('click', event => {
   const pageButton=event.target.closest('[data-body-page]');if(pageButton){const details=pageButton.closest('details[data-body]');loadBodyPage(details,Number(pageButton.dataset.bodyPage));return;}
+  const directionAction=event.target.closest('[data-direction-action]'),frontier=event.target.closest('[data-frontier]');
+  if(directionAction){setDirectionTask(directionAction.dataset.directionId,directionAction.dataset.directionAction).catch(error=>status(error.message,true));return;}
+  if(frontier){selectFrontier(frontier.dataset.frontier);return;}
   const action=event.target.closest('[data-graph-action]'),round=event.target.closest('[data-round]'),edge=event.target.closest('[data-graph-edge]');
   if(action){graphAction(action.dataset.graphAction);return;}
   if(round){openGraphRound(round.dataset.round,round.dataset.record,round.dataset.branch);return;}
-  if(edge){const e=graphModel?.edges.find(e=>e.index===Number(edge.dataset.graphEdge));if(e){graphUI.selected=e.from;graphUI.edge=e.index;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);}return;}
+  if(edge){const e=graphModel?.edges.find(e=>e.index===Number(edge.dataset.graphEdge));if(e){graphUI.frontier=null;graphUI.selected=e.from;graphUI.edge=e.index;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);}return;}
   const editButton = event.target.closest('[data-edit]'), message = event.target.closest('[data-message]'), node = event.target.closest('[data-topic]');
-  if (editButton) edit(editButton.dataset.edit);
+  if (editButton) {event.preventDefault?.();edit(editButton.dataset.edit);}
   if (message) locate(message.dataset.message);
   if (node) locateTopic(node.dataset.topic);
 });
@@ -372,7 +405,7 @@ $('graph').addEventListener('input',event=>{if(graphComposing||event.isComposing
 $('graph').addEventListener('change',event=>{if(!event.target.matches('[data-graph-returns]'))return;graphUI.returns=event.target.checked;renderGraph(current(),AtlasAI.displayAnalysis(rawRecord(),selectedBranch)?.result||null);});
 $('graph').addEventListener('wheel',event=>{const stage=event.target.closest('.graph-stage');if(!stage)return;event.preventDefault();const r=stage.getBoundingClientRect();zoomGraph(Math.exp(-event.deltaY*.0015),event.clientX-r.left,event.clientY-r.top);},{passive:false});
 let graphDrag=null,graphSuppressClick=false;
-$('graph').addEventListener('pointerdown',event=>{graphSuppressClick=false;const stage=event.target.closest('.graph-stage');if(!stage||event.target.closest('button,[data-graph-edge]')||event.button!==undefined&&event.button!==0||event.isPrimary===false)return;event.preventDefault?.();graphDrag={x:event.clientX,y:event.clientY,originX:graphUI.x,originY:graphUI.y,pointerId:event.pointerId,stage,moved:false};stage.classList?.add('is-panning');stage.setPointerCapture(event.pointerId);});
+$('graph').addEventListener('pointerdown',event=>{graphSuppressClick=false;const stage=event.target.closest('.graph-stage');if(!stage||event.target.closest('button,[data-graph-edge]')||event.target.closest('[data-frontier]')||event.button!==undefined&&event.button!==0||event.isPrimary===false)return;event.preventDefault?.();graphDrag={x:event.clientX,y:event.clientY,originX:graphUI.x,originY:graphUI.y,pointerId:event.pointerId,stage,moved:false};stage.classList?.add('is-panning');stage.setPointerCapture(event.pointerId);});
 $('graph').addEventListener('pointermove',event=>{if(!graphDrag||event.pointerId!==undefined&&event.pointerId!==graphDrag.pointerId)return;event.preventDefault?.();const dx=event.clientX-graphDrag.x,dy=event.clientY-graphDrag.y;if(!graphDrag.moved&&Math.hypot(dx,dy)<4)return;graphDrag.moved=true;graphUI.x=graphDrag.originX+dx;graphUI.y=graphDrag.originY+dy;graphUI.viewport=true;graphTransform();});
 function endGraphDrag(event){if(!graphDrag||event?.pointerId!==undefined&&event.pointerId!==graphDrag.pointerId)return;const drag=graphDrag;graphDrag=null;graphSuppressClick=drag.moved&&event?.type!=='pointercancel';drag.stage.classList?.remove('is-panning');if(drag.stage.hasPointerCapture?.(drag.pointerId))drag.stage.releasePointerCapture(drag.pointerId);}
 for(const name of ['pointerup','pointercancel','lostpointercapture'])$('graph').addEventListener(name,endGraphDrag);

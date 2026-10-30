@@ -50,8 +50,8 @@
         if(entry)analysisByBranch[branch]={result:entry.result,generatedAt:entry.generatedAt,model:entry.model,provider:entry.provider,stale:entry.stale};
       }
       const source=record.source?{type:record.source.type,completeness:record.source.completeness,note:record.source.note,omittedNonText:record.source.omittedNonText,unreadableContent:record.source.unreadableContent}:null;
-      const view={viewOnly:true,key,url:record.url,title:record.title,platform:record.platform,createdAt:record.createdAt,annotations:record.annotations||{},source,allMessages:metadata,messages,branches,analysisByBranch};
-      view.renderRevision=await digest(JSON.stringify({metadata,messages,branches,annotations:view.annotations,analysisByBranch}));
+      const view={viewOnly:true,key,url:record.url,title:record.title,platform:record.platform,createdAt:record.createdAt,annotations:record.annotations||{},directionTasks:record.directionTasks||{},source,allMessages:metadata,messages,branches,analysisByBranch};
+      view.renderRevision=await digest(JSON.stringify({metadata,messages,branches,annotations:view.annotations,directionTasks:view.directionTasks,analysisByBranch}));
       const revision=await digest(JSON.stringify(view));
       if(old?.revision===revision)return {changed:false,revision};
       view.revision=revision;view.updatedAt=record.updatedAt;
