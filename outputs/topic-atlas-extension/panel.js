@@ -27,7 +27,7 @@ async function activeTab() { return (await chrome.tabs.query({ active: true, cur
 async function request(message) { const result = await chrome.runtime.sendMessage(message); if (result?.error) throw new Error(result.error); return result; }
 async function toPage(message) {
   const tab = await activeTab();
-  if (!tab?.id || !Atlas.conversation(tab.url || '')) throw new Error('请先切换到 ChatGPT 或 Gemini 对话网页。');
+  if (!tab?.id || !Atlas.conversation(tab.url || '')) throw new Error('请先切换到 ChatGPT、DeepSeek 或 Gemini 对话网页。');
   try { return await chrome.tabs.sendMessage(tab.id, message); }
   catch {
     // Reconnect tabs which were already open when the extension was installed.
@@ -208,7 +208,7 @@ async function sendLocate(record, payload) {
   if (!targetInfo?.key || targetInfo.key !== record.key) throw new Error('这条记录没有可验证的原网页地址。');
   const active = await activeTab();
   if (Atlas.conversation(active?.url || '')?.key === record.key) return toPage(payload);
-  const tabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*', 'https://gemini.google.com/*'] });
+  const tabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*', 'https://gemini.google.com/*', 'https://chat.deepseek.com/*'] });
   let target = tabs.find(tab => Atlas.conversation(tab.url || '')?.key === record.key);
   if (target) {
     await chrome.tabs.update(target.id, { active: true });

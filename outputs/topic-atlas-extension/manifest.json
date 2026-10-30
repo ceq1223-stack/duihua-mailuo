@@ -2,18 +2,18 @@
   "manifest_version": 3,
   "name": "对话脉络 · Topic Atlas",
   "description": "自动读取对话到本机；可选连接模型 API，生成主题摘要与关系图。",
-  "version": "0.9.3",
+  "version": "0.9.5",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "sidePanel", "activeTab", "scripting", "alarms", "unlimitedStorage"],
   "options_page": "settings.html",
-  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*"],
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://chat.deepseek.com/*"],
   "optional_host_permissions": ["https://*/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "打开对话脉络" },
   "side_panel": { "default_path": "panel.html" },
   "content_scripts": [{
-    "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*"],
-    "js": ["core.js", "locator.js", "automatic.js"],
+    "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://gemini.google.com/*", "https://chat.deepseek.com/*"],
+    "js": ["core.js", "platforms.js", "locator.js", "automatic.js"],
     "run_at": "document_idle"
   }]
 }

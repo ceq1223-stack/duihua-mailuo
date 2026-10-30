@@ -113,6 +113,8 @@
       }) }));
     const knownGaps = [];
     if (path.source?.completeness !== 'returned-tree') knownGaps.push('输入可能仅包含部分历史，不可声称完整会话。');
+    if(path.source?.attachments==='not-extracted')knownGaps.push('网页适配只读取文字，附件正文尚未核对，不可猜测附件内容。');
+    if(path.source?.completion==='unknown')knownGaps.push('平台回复完成状态无法确认，当前材料可能仍在生成，不能当作完整回答。');
     if (rounds.some(r => r.messages.some(m => m.nonText))) knownGaps.push('部分消息含未提取的附件内容，不可猜测。');
     if (rounds.some(r => r.messages.some(m => m.role === 'unknown'))) knownGaps.push('部分消息角色未识别。');
     const previous = record.aiResults?.[branchId];
@@ -128,7 +130,7 @@
     return { input, fingerprint: signature(record, branchId) };
   }
   function validTopicBrief(value) {
-    return typeof value==='string'&&value.trim().length>0&&Array.from(value.trim()).length<=60&&!/[\r\n\t]/.test(value);
+    return typeof value==='string'&&value.trim().length>0&&Array.from(value.trim()).length<=120&&!/[\r\n\t]/.test(value);
   }
   function nextStep(code) {
     if(code==='API_TIMEOUT')return '达到插件本地等待上限，不能证明服务没有执行或计费。可在 API 设置延长单次请求等待时间；保存后新建任务可复用兼容进度。重试须手动进行，不会自动重发。';
@@ -187,7 +189,7 @@
     }
     const topics = array(raw.topics, '主题', input.rounds.length * 3).map((t,i) => {
       where={phase:options.phase||'结构化结果',topicNumber:i+1,field:'topics['+i+']'};
-      if(options.requireBrief&&!validTopicBrief(t?.brief))fail('主题简短介绍 brief 缺失或格式不正确（须为1至60字的单行文字）','TOPIC_BRIEF_INVALID',{field:'brief'});
+      if(options.requireBrief&&!validTopicBrief(t?.brief))fail('主题简短介绍 brief 缺失或格式不正确（须为1至120字的单行文字，建议不超过60字）','TOPIC_BRIEF_INVALID',{field:'brief'});
       return {id:string(t?.id,'主题 ID',100),name:string(t?.name,'主题名称',80),brief:validTopicBrief(t?.brief)?t.brief.trim():null,summary:string(t?.summary,'主题摘要'),roundIds:array(t?.roundIds,'主题轮次',input.rounds.length).map(id=>{const r=resolveRound(id);if(!r)fail('主题引用未知轮次','VALIDATION_TOPIC_ROUND',{field:'roundIds'});return r.roundId;})};
     });
     const outputIds = new Set(topics.map(t => t.id)), catalog = input.context?.topics || [];

@@ -8,10 +8,10 @@
   function conversation(url) {
     try {
       const u = new URL(url);
-      const platform = /^(chatgpt\.com|chat\.openai\.com)$/.test(u.hostname) ? 'ChatGPT' : u.hostname === 'gemini.google.com' ? 'Gemini' : null;
+      const platform = /^(chatgpt\.com|chat\.openai\.com)$/.test(u.hostname) ? 'ChatGPT' : u.hostname === 'gemini.google.com' ? 'Gemini' : u.hostname === 'chat.deepseek.com' ? 'DeepSeek' : null;
       if (!platform || u.protocol !== 'https:') return null;
       // Only stable conversation routes can be archived. Draft landing pages are excluded.
-      const valid = platform === 'ChatGPT' ? /\/(?:c)\/[^/]+/.test(u.pathname) : /^(?:\/u\/\d+)?\/app\/[^/]+/.test(u.pathname);
+      const valid = platform === 'ChatGPT' ? /\/(?:c)\/[^/]+/.test(u.pathname) : platform === 'DeepSeek' ? /^\/a\/chat\/s\/[a-zA-Z0-9_-]{1,128}\/?$/.test(u.pathname) : /^(?:\/u\/\d+)?\/app\/[^/]+/.test(u.pathname);
       if (!valid) return { platform, draft: true };
       const clean = u.origin + u.pathname.replace(/\/$/, '');
       return { platform, url: clean, key: platform + ':' + clean };
@@ -36,6 +36,9 @@
     return roots;
   }
   function extract(doc, platform) {
+    if (platform === 'Gemini' && root.AtlasPlatforms) return root.AtlasPlatforms.gemini(doc);
+    if (platform === 'DeepSeek' && root.AtlasPlatforms) return root.AtlasPlatforms.deepseek(doc);
+    if (platform === 'DeepSeek') return [];
     // Prefer explicit roles. Newer ChatGPT layouts can put the role on the turn
     // article instead of rendering a data-message-author-role descendant.
     const roots = pageRoots(doc);
@@ -132,12 +135,13 @@
     const fresh = [];
     for (const raw of incoming) {
       const item = { id: raw.id, nativeId: raw.nativeId, role: raw.role, text: raw.text };
+      for (const field of ['turnId','status','channel','contentType','endTurn','nonText']) if (raw[field] !== undefined) item[field] = raw[field];
       let index = positions.get(item.id);
-      if (index === undefined) index = messages.findIndex((m, i) => i > cursor && m.role === item.role && m.text === item.text);
+      if (index === undefined) index = messages.findIndex((m, i) => i > cursor && m.role === item.role && m.text === item.text && ((!m.turnId&&!item.turnId)||!!m.nativeId&&m.nativeId===item.nativeId));
       if (index !== undefined && index >= 0) {
         cursor = index;
         // Keep original ID to preserve manual annotations.
-        messages[index] = { ...messages[index], text: item.text, nativeId: item.nativeId || messages[index].nativeId, lastSeenAt: now };
+        messages[index] = { ...messages[index], ...item, id:messages[index].id, nativeId: item.nativeId || messages[index].nativeId, lastSeenAt: now };
         fresh.push({ existing: messages[index] });
       } else fresh.push({ new: { ...item, firstSeenAt: now, lastSeenAt: now } });
     }

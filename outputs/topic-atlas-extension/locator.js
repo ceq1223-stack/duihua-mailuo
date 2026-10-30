@@ -58,6 +58,17 @@
     const segments = message.segments?.length ? [...message.segments] : [message];
     if (message.role === 'assistant') segments.sort((a, b) => (b.channel === 'final') - (a.channel === 'final'));
     const roots = Atlas.pageRoots(doc);
+    if(['Gemini','DeepSeek'].includes(platform)&&globalThis.AtlasPlatforms){
+      const candidates=Atlas.extract(doc,platform);
+      for(const segment of segments){
+        const matches=candidates.filter(m=>m.role===segment.role&&(segment.nativeId&&m.nativeId===segment.nativeId||m.id===segment.id));
+        if(matches.length===1&&compact(matches[0].text)===compact(segment.text)){lastMatch=segment.nativeId?'native-id':'source-id';return matches[0]._node;}
+        if(segment.nativeId||String(segment.id).includes(':deepseek-dom:'))continue;
+        const legacy=candidates.filter(m=>m.role===segment.role&&compact(m.text)===compact(segment.text));
+        if(legacy.length===1){lastMatch='role-text';return legacy[0]._node;}
+      }
+      return null;
+    }
     // Match stable message IDs before relying on any text or page position.
     for (const segment of segments) {
       if (!segment.nativeId) continue;

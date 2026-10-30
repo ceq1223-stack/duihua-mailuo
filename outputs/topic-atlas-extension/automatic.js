@@ -18,9 +18,9 @@
       if (current.platform === 'ChatGPT') result = await chrome.runtime.sendMessage({ type: 'read-structured' });
       else {
         const messages = Atlas.extract(document, current.platform).map(({ _node, ...m }) => m);
-        if (!messages.length) throw new Error('尚未识别到 Gemini 消息；本版优先支持 Edge＋ChatGPT。');
+        if (!messages.length) throw Object.assign(new Error('网页消息尚未加载，或正式回答结构无法识别；将等待页面变化后重试。'),{code:'PAGE_MESSAGES_PENDING'});
         result = await chrome.runtime.sendMessage({ type: 'capture', conversation: current, title: document.title, messages });
-        if (!result?.error) result = { count: messages.length };
+        if (!result?.error) result = { ...result,count: messages.length };
       }
       if (!result || result.error) throw new Error(result?.error || '读取未响应。');
       if (current.key !== info()?.key) return { skipped: true };
@@ -28,6 +28,7 @@
     } catch (failure) {
       if (!enabled) return { skipped: true };
       error = String(failure.message || '自动读取失败。').replace(/https?:\/\/\S+/g, '[网页地址]');
+      if(failure.code==='PAGE_MESSAGES_PENDING'){schedule(3000);return {pending:true};}
       blockedKey = current.key; runningKey = null; clearTimeout(timer);
       return { error };
     }
@@ -61,7 +62,7 @@
     }
   });
   const observer = new MutationObserver(() => { if (runningKey && !locating) schedule(); });
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes:true, attributeFilter:['aria-busy'] });
   chrome.runtime.sendMessage({ type: 'get-auto-settings' }).then(stored => { enabled = stored?.enabled !== false; follow(); }).catch(report);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) follow(); });
   setInterval(follow, 1000);

@@ -290,14 +290,15 @@ const AtlasAPI = (() => {
         catch(error){if(error.code!=='INPUT_BUDGET')throw error;return {input:AtlasBatch.makeInput(snapshot.input,[snapshot.input.rounds[processed]],aggregate)};}
       }
       async function fillLegacyBriefs() {
+        let briefRepair=null;
         while(AtlasBatch.briefs.missing(aggregate).length){
           if(controller.signal.aborted)throw new Error('已取消目录介绍补齐，已完成进度保留。');
           if(briefRequests>=12)throw new Error('本次目录补齐达到12次请求上限，已保存进度，请手动续做。');
           let planned;
           try{planned=AtlasBatch.briefs.next(aggregate,profile.inputBudget,Math.min(profile.maxTokens,4096));}
           catch(error){if(error.code!=='BRIEF_INPUT_BUDGET')throw error;const t=AtlasBatch.briefs.missing(aggregate)[0];planned={stage:'topic-briefs',topics:[{id:t.id,name:t.name,summary:t.summary}]};}
-          const input=await fragmentReader.compact(planned,AtlasBatch.briefs.prompt,'完整读取摘要，为该主题生成准确的一句话介绍，不改变主题ID和名称');
-          directory={total:aggregate.topics.length,completed:aggregate.topics.length-AtlasBatch.briefs.missing(aggregate).length,source:'saved-summary',requests:(directory?.requests||0)+1};
+          const input=await fragmentReader.compact({...planned,...(briefRepair?{briefRepair}:{})},AtlasBatch.briefs.prompt,'完整读取摘要，为该主题生成准确的一句话介绍，不改变主题ID和名称');
+          directory={...directory,total:aggregate.topics.length,completed:aggregate.topics.length-AtlasBatch.briefs.missing(aggregate).length,source:'saved-summary',requests:(directory?.requests||0)+1};
           const body={model:profile.model,stream:true,messages:[{role:'system',content:AtlasBatch.briefs.prompt},{role:'user',content:JSON.stringify(input)}],...(profile.jsonMode?{response_format:{type:'json_object'}}:{})};
           body[profile.provider==='openai'?'max_completion_tokens':'max_tokens']=Math.min(profile.maxTokens,4096);
           AtlasAI.checkRequest(profile,body,'主题简介请求规划');
@@ -306,10 +307,22 @@ const AtlasAPI = (() => {
             const response=await fetchJSON(AtlasAI.endpoint(profile.baseUrl).chatUrl,apiKey,{method:'POST',body:JSON.stringify(body)},controller.signal,'主题简介补齐');
             if(controller.signal.aborted)throw new Error('已取消目录介绍补齐。');
             const raw=replyJSON(response,'主题简介补齐',Math.min(profile.maxTokens,4096));
-            const generated=AtlasBatch.briefs.validate(raw,input),byId=new Map(generated.map(t=>[t.id,t.brief]));
+            for(const k of ['prompt_tokens','completion_tokens','total_tokens'])if(Number.isFinite(response.usage?.[k]))usage[k]=(usage[k]||0)+response.usage[k];
+            let generated;
+            try{generated=AtlasBatch.briefs.validate(raw,input);}
+            catch(error){
+              if(error.code==='BRIEF_VALUE_INVALID'&&!briefRepair){
+                briefRepair={code:error.code,reason:error.diagnostics?.reason,instruction:'上次简介字段不合格。仅重新生成本页主题简介，写20至40字的单行文字，最多60字；不要改ID、名称或摘要。不要返回正文、关系或解释。'};
+                directory.repairRequests=(directory.repairRequests||0)+1;
+                await save(false);continue;
+              }
+              if(error.code==='BRIEF_VALUE_INVALID')await save(false);
+              throw error;
+            }
+            const byId=new Map(generated.map(t=>[t.id,t.brief]));
             aggregate={...aggregate,topics:aggregate.topics.map(t=>byId.has(t.id)?{...t,brief:byId.get(t.id)}:t)};
             directory.completed=aggregate.topics.length-AtlasBatch.briefs.missing(aggregate).length;
-            for(const k of ['prompt_tokens','completion_tokens','total_tokens'])if(Number.isFinite(response.usage?.[k]))usage[k]=(usage[k]||0)+response.usage[k];
+            briefRepair=null;
             await save(false);
           }finally{clearTimeout(timer);}
         }

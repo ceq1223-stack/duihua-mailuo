@@ -1,4 +1,4 @@
-importScripts('core.js', 'reader.js', 'prompt.js','directions.js', 'ai.js', 'batch.js','fragments.js', 'trust.js','ui-events.js','views.js', 'api-worker.js', 'library.js', 'queue.js');
+importScripts('core.js', 'platforms.js', 'reader.js', 'prompt.js','directions.js', 'ai.js', 'batch.js','fragments.js', 'trust.js','ui-events.js','views.js', 'api-worker.js', 'library.js', 'queue.js');
 // Deny content scripts access to stored API credentials and private archives.
 const storageReady = Promise.all([
   chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -72,13 +72,20 @@ async function receive(message, sender) {
     const actual = Atlas.conversation(sender.tab?.url || '');
     if (!actual?.key || actual.key !== message.conversation?.key) throw new Error('采集来源与当前网页不一致。');
     if (!Array.isArray(message.messages) || message.messages.length > 10000) throw new Error('消息格式或数量异常。');
-    const incoming = message.messages.filter(m => ['user', 'assistant', 'unknown'].includes(m.role) && typeof m.id === 'string' && typeof m.text === 'string').map(m => ({ ...m, text: m.text.slice(0, 500000) }));
+    const incoming = message.messages.filter(m => ['user', 'assistant', 'unknown'].includes(m.role) && typeof m.id === 'string' && typeof m.text === 'string').map(m => {
+      const safe = {id:m.id,role:m.role,text:m.text};
+      for (const field of ['nativeId','turnId','status','channel','contentType']) if (typeof m[field] === 'string' || m[field] === null) safe[field] = m[field];
+      for (const field of ['endTurn','nonText']) if (typeof m[field] === 'boolean') safe[field] = m[field];
+      return safe;
+    });
+    if(incoming.reduce((n,m)=>n+m.text.length,0)>20000000)throw new Error('当前已加载正文超过本地单次采集容量；未截断或覆盖旧内容。');
     const key = keyFor(actual.key), stored = (await chrome.storage.local.get(key))[key];
     const now = new Date().toISOString();
     const record = { ...stored, key: actual.key, url: actual.url, platform: actual.platform, title: String(message.title || actual.platform).slice(0, 300), updatedAt: now, createdAt: stored?.createdAt || now, annotations: stored?.annotations || {}, messages: Atlas.merge(stored, incoming, now) };
-    if(sameCapture(stored,record))return {ok:true,unchanged:true};
+    if(['Gemini','DeepSeek'].includes(actual.platform))Object.assign(record,AtlasPlatforms.merge(stored,incoming,now,actual.platform));
+    if(sameCapture(stored,record))return {ok:true,unchanged:true,source:record.source};
     await chrome.storage.local.set({ [key]: record });
-    return { ok: true };
+    return { ok: true,source:record.source };
   }
   if(message.type==='direction-set'){
     if(!AtlasTrust.isUI(sender))throw new Error('只能从扩展界面调整路径待办。');
@@ -148,7 +155,7 @@ chrome.storage.onChanged?.addListener((changes, area) => {
   }
   if (area !== 'local' || !changes['atlas:settings']) return;
   const enabled = changes['atlas:settings'].newValue?.autoCapture !== false;
-  chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*', 'https://gemini.google.com/*'] }).then(tabs => {
+  chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*', 'https://gemini.google.com/*', 'https://chat.deepseek.com/*'] }).then(tabs => {
     tabs.forEach(tab => chrome.tabs.sendMessage(tab.id, { type: 'auto-setting', enabled }).catch(() => {}));
   }).catch(() => {});
 });

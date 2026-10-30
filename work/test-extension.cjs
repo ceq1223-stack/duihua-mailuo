@@ -45,7 +45,7 @@ test('Missing user is explicit, never fabricated',()=>{const t=A.turns([m('a','a
 test('Manifest scope and all scripts parse',()=>{
  const manifest=JSON.parse(fs.readFileSync(dir+'manifest.json'));assert.equal(manifest.manifest_version,3);
  assert.deepEqual(manifest.permissions,['storage','sidePanel','activeTab','scripting','alarms','unlimitedStorage']);
- assert.equal(manifest.host_permissions.length,3);assert(!manifest.permissions.includes('history'));
+ assert.equal(manifest.host_permissions.length,4);assert(!manifest.permissions.includes('history'));
  for(const file of fs.readdirSync(dir).filter(f=>f.endsWith('.js')))new vm.Script(fs.readFileSync(dir+file,'utf8'));
  for(const file of ['background.js','panel.html',...manifest.content_scripts[0].js])assert(fs.existsSync(dir+file));
 });
